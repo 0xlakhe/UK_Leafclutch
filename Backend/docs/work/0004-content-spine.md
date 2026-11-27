@@ -1,7 +1,7 @@
 ---
 task: 0004
 title: Content spine
-status: in-progress
+status: done
 branch: prabesh
 started: 2026-11-27
 updated: 2026-11-27
@@ -19,7 +19,7 @@ four tables; no typed table is created here.
 
 ## Acceptance criteria
 
-- [ ] `0004_content_core` creates the four tables with every column, default, constraint
+- [x] `0004_content_core` creates the four tables with every column, default, constraint
       and index in `DATABASE.md` §Content items and versions and §Page SEO:
       `content_item_next_version`, the path/slug formats and required-by-kind rules, the
       settings and section shapes, the archive rule, `unique (id, kind)`;
@@ -27,18 +27,18 @@ four tables; no typed table is created here.
       `unique (item_id, id)`; `content_publication_version_fk`;
       `content_seo_title_length`/`_description_length`; and the six indexes including
       `content_version_one_open`.
-- [ ] Functions and triggers, copied verbatim: `bump_next_version` +
+- [x] Functions and triggers, copied verbatim: `bump_next_version` +
       `content_version_bump_next`, `prevent_published_version_mutation` +
       `content_version_immutable`, `assert_publication_version` +
       `content_publication_assert`, and `prevent_published_content_mutation` +
       `content_seo_immutable`.
-- [ ] `prevent_published_content_mutation` is created here, but it is attached **only** to
+- [x] `prevent_published_content_mutation` is created here, but it is attached **only** to
       `content_seo`: the typed tables it also guards arrive in M5 onwards and attach it in
       their own revisions.
-- [ ] Downgrade drops every trigger, then the functions, then the tables, in an order that
+- [x] Downgrade drops every trigger, then the functions, then the tables, in an order that
       works with the composite foreign keys.
-- [ ] The four tables are modelled in `app/models.py`; `alembic check` stays clean.
-- [ ] Database tests cover, each failing if the protection is removed:
+- [x] The four tables are modelled in `app/models.py`; `alembic check` stays clean.
+- [x] Database tests cover, each failing if the protection is removed:
       - a second open version for one item is refused; a new version after the first is
         published is allowed;
       - updating a published version is refused, while the publish update itself
@@ -57,9 +57,9 @@ four tables; no typed table is created here.
         index refuse a duplicate;
       - deleting an item cascades versions and SEO; deleting a version named by
         `content_publication` is refused.
-- [ ] `uv run ruff check .`, `uv run mypy app` and `uv run pytest` pass; `alembic check`
+- [x] `uv run ruff check .`, `uv run mypy app` and `uv run pytest` pass; `alembic check`
       is clean; `downgrade base` then `upgrade head` succeeds. Output quoted.
-- [ ] Only `Backend/` changes.
+- [x] Only `Backend/` changes.
 
 ## Non-goals
 
@@ -414,6 +414,29 @@ The scratch database was dropped. `leafclutch_m4_review` and
 
 ## Review
 
+Two rounds with one independent reviewer session. Every Critical, High and listed Medium is
+closed; the one Medium that survives belongs to M11, and it is recorded in `PLAN.md` M11.
+
+Round 1: three High — a published version could be deleted directly and through the item
+cascade; a typed row could move off a published version because only the new `version_id`
+was checked; `archived_by ON DELETE SET NULL` contradicted the archive check. One Medium —
+archiving a live item left its publication pointer. Six Low. Fixed in `709146`.
+
+Round 2: the three Highs are closed with mutation proofs — dropping
+`content_version_immutable` fails the delete tests, removing the `version_id` guard fails the
+move test, and deleting an archiver now raises `RestrictViolation`. The archive guard passes
+the normal order (delete the pointer, then set the flags). The surviving Medium is the M11
+page/section edge; the Lows are deferred with reasons under `## Remaining`.
+
+One correction recorded: the H1 proof is dropping the trigger. Removing only the delete
+branch leaves the status check in place, so the published-delete tests still pass; that
+mutation only proves the branch is needed for draft deletes.
+
+Verified by the orchestrator: 210 tests in both modes, `alembic check` clean at
+`0004_content_core`, and the scratch round trip.
+
+Outcome: **accepted**. No open Critical or High.
+
 ## Docs updated
 
 - `Backend/README.md` — the `app/models.py` and `tests/` layout rows now name the
@@ -432,9 +455,23 @@ The scratch database was dropped. `leafclutch_m4_review` and
 
 ## Remaining
 
-None of the High, Medium or listed Low findings remain open. No other Low finding was
-supplied in the fix brief, so none is recorded as deferred here; if the full review had
-more, they are not in this work file.
+Deferred with reasons after the round-2 recheck:
+
+- **The `archive_content` page/section edge is M11 work, not M4.** A page with no pointer
+  but a live section pointer would fail the archive guard when M11 archives the section.
+  The guard is correct; the M11 function must delete every section pointer first. Recorded
+  in `PLAN.md` M11 with the required test.
+- **L1 — test precision.** Published-with-SEO, pointer-removed and restore cases, and the
+  other staff FK deletions, were verified by probe but are not all pinned as tests.
+- **L2 — catalog normalisation.** Parentheses are stripped, so a pure regrouping can pass
+  the constraint catalog test; the function tests pin fragments, not whole bodies.
+- **L4 — the revision was edited in place.** Safe because no database outside this checkout
+  applied `307c96d`; if one did, a new revision is required rather than a schema recreation.
+
+## Next
+
+M5 — landing page sections (revision `0005`): the ten sections, their child tables and the
+typed-table triggers that attach `prevent_published_content_mutation`.
 
 ## Open questions
 
@@ -474,7 +511,9 @@ more, they are not in this work file.
   by the trigger/function catalog tests, not by a per-guard mutation run.
 - The migration round trip ran on the development database, as task 0003 did; the test
   database was brought to head by the suite fixture and was not downgraded in this run.
-- The archive guard was exercised by a direct update, not by M11's `archive_content`,
-  which does not exist yet; the document states that function deletes the pointer first.
+- The archive guard was exercised by a direct update, not by M11's `archive_content`.
+  The normal order (delete the pointer, then set the flags) passes, but the page/section
+  edge described under `## Remaining` cannot be exercised until `page_section` (M5) and
+  `archive_content` (M11) exist.
 - The publish/unpublish functions, grants, RLS and views are M11/M12, so the spine was
   exercised with direct SQL inside one transaction, not through the application.

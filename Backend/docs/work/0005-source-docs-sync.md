@@ -1,7 +1,7 @@
 ---
 task: 0005
 title: Sync reviewed CONTRACT and ADMIN from the design workspace
-status: in-progress
+status: done
 branch: prabesh
 started: 2026-11-27
 updated: 2026-11-27
@@ -221,6 +221,16 @@ Not run: `uv run ruff check .`, `uv run mypy app`, `uv run pytest`, `uv run alem
 No executable change is in this commit; see `## Not verified`.
 
 ## Review
+
+Orchestrator verification, no independent review needed: documentation copy only.
+
+- `cmp` silent for both files; staged blobs identical.
+- Source markers 6 / 2 / 1 before and after the copy.
+- `DATABASE.md` unchanged: same sha256, `media_deleted_after_upload` and
+  `their six indexes` still present. The design copy is 104 lines behind M2–M4.
+- Commit `e579ddc` touches only four `Backend/docs/` paths; nothing outside.
+
+Outcome: **accepted**.
 
 Left for the orchestrator.
 

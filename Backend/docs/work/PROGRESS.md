@@ -425,6 +425,71 @@ Round 2: the three Mediums closed with probes; four Low deferred with reasons.
 
 Limits: Supabase, storage, RLS and the M17 promotion path were not run; the database accepts a public direct insert and `../` in `object_path`, by recorded decision.
 
+---
+
+## Task: TASK-0004 — content spine
+
+Status: done
+Date: 2026-11-27
+Milestone: M4
+
+Changed:
+- `migrations/versions/0004_content_core.py`; `app/models.py`; `tests/test_content_spine.py`; `tests/test_staff_schema.py` (cleanup); `README.md`; `DATABASE.md` (path, archive pair, archived_by restrict, delete guard, version-move refusal, archive guard); work file.
+
+Evidence:
+- `uv run pytest -q` → 210 passed in both import modes; ruff and mypy green.
+- `alembic check` clean at `0004_content_core`; scratch `downgrade base` → `upgrade head`.
+- Six triggers on the spine including `content_version_set_updated_at`; six explicit indexes; no later-table triggers.
+- Mutation: dropping `content_version_immutable` fails the delete tests; removing the version-id guard fails the move test.
+
+Decisions:
+- A published version cannot be deleted, only updated into publication.
+- A typed row belongs to exactly one version; `version_id` never changes.
+- `archived_by` is `ON DELETE RESTRICT`: staff are deactivated, not deleted, and the archive record is audit evidence.
+- Archiving is refused while a publication pointer exists; M11 deletes the pointer first.
+- The publication pointer cannot move between items.
+
+Remaining: the M11 page/section archive edge, plus the deferred Lows in the work file.
+Next: M5 — landing page sections.
+
+Canonical: [0004-content-spine.md](0004-content-spine.md)
+
+---
+
+## Review: TASK-0004, rounds 1–2
+
+Reviewer: one `reviewer` subagent
+Date: 2026-11-27
+Scope: `84bf0b2..709146`.
+Outcome: **accepted — no open Critical or High.**
+
+Round 1: three High (published-version delete, typed-row move, archived_by SET NULL) and one Medium (archive with a live pointer). Fixed in `709146`.
+Round 2: Highs closed by mutation; the Medium moves to M11 as a documented requirement; Lows deferred.
+
+Limits: Supabase, M11 functions and RLS were not run; the page/section edge cannot be exercised before M5 and M11.
+
+---
+
+## Task: TASK-0005 — source documents sync (decisions 71–76)
+
+Status: done
+Date: 2026-11-27
+
+Changed:
+- `CONTRACT.md` and `ADMIN.md` copied byte-for-byte from the design workspace at `d1c7707`; work file and index row.
+
+Evidence:
+- `cmp` silent for both; staged blobs identical.
+- Markers 6 / 2 / 1 before and after; `DATABASE.md` unchanged by sha256 and by its two M2–M4 markers.
+- Commit `e579ddc`, four `Backend/docs/` paths only.
+
+Decisions:
+- `DATABASE.md` was deliberately not synced: the design copy is 104 lines behind the M2–M4 schema work.
+
+Remaining: none.
+Next: M5.
+
+
 
 
 

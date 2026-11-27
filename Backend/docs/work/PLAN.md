@@ -105,6 +105,12 @@ Exit criteria are the same for all: upgrade and downgrade on a fresh database,
 
 M11 and M12 are the hard ones. Budget for them; do not merge them into one milestone.
 
+M11 carries one requirement discovered while reviewing M4: `archive_content` must unpublish a
+landing page's **section** pointers even when the page itself has no pointer. Otherwise the
+M4 `content_item_archive_guard` refuses the section update and the whole archive rolls back.
+The guard is right; the M11 function must delete every pointer first. Add a test with the
+page pointer absent and one section pointer present.
+
 ## Phase C — API
 
 ### M14. Public read API (M)
