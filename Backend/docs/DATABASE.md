@@ -281,13 +281,19 @@ create table media (
   constraint media_promotion check (
     (visibility = 'public') = (promoted_at is not null)
   ),
+  constraint media_deleted_after_upload check (
+    deleted_at is null or deleted_at >= uploaded_at
+  ),
+  constraint media_promoted_after_upload check (
+    promoted_at is null or promoted_at >= uploaded_at
+  ),
   constraint media_object_path check (
     char_length(object_path) between 1 and 300 and object_path !~ '^/'
   ),
   constraint media_mime_length check (char_length(mime_type) between 1 and 100),
   constraint media_size check (size_bytes > 0 and size_bytes <= 4194304),
   constraint media_checksum check (octet_length(checksum_sha256) = 32),
-  constraint media_alt_length check (alt is null or char_length(alt) <= 120),
+  constraint media_alt_length check (alt is null or char_length(alt) between 1 and 120),
   constraint media_alt_required check (bucket = 'evidence' or alt is not null),
   constraint media_types check (
     (bucket = 'evidence'
@@ -303,8 +309,14 @@ create table media (
 );
 ```
 
-`media` is immutable except for one promotion and `deleted_at`. A replacement creates a
-new id, path and row; the old row stays while a version or approval references it.
+`media` is immutable except for one promotion and one `deleted_at` value. A replacement
+creates a new id, path and row; the old row stays while a version or approval references
+it. `promoted_at` and `deleted_at` must not precede `uploaded_at`, and once `deleted_at` is
+set it cannot be changed or cleared.
+
+Rows are normally created `private` in `media-staging`, but the database does not prevent a
+direct public insert: the upload path is the only writer, and deletion is governed by the
+later reference checks and the M12 grants.
 
 A site image is inserted `private` in `media-staging` and stays there while it is only
 on a draft. Publishing copies the object to `site-media` and updates the row to
@@ -322,7 +334,9 @@ in either bucket pass the same decode guard: at most 40 megapixels and 8192px on
 side before the bitmap is decoded.
 
 The object path is `<id>.<extension>`, with the extension derived from the stored
-format, so the original filename never reaches storage or the URL.
+format, so the original filename never reaches storage or the URL. The database check on
+`object_path` is a length and leading-slash guard, not a traversal check: M17 builds
+`<id>.<extension>` from the stored id and format and must not trust an incoming value.
 
 ### Content items and versions
 
@@ -1880,6 +1894,10 @@ begin
     raise exception 'media cannot be undeleted';
   end if;
 
+  if old.deleted_at is not null and new.deleted_at is distinct from old.deleted_at then
+    raise exception 'media deletion cannot be changed';
+  end if;
+
   if old.visibility = 'public' then
     if new.visibility <> 'public'
        or new.bucket <> old.bucket
@@ -1890,7 +1908,9 @@ begin
     if old.bucket <> 'media-staging'
        or new.bucket <> 'site-media'
        or old.promoted_at is not null
-       or new.promoted_at is null then
+       or new.promoted_at is null
+       or old.deleted_at is not null
+       or new.deleted_at is not null then
       raise exception 'promotion moves one staged row to site-media';
     end if;
   elsif new.visibility <> old.visibility

@@ -10,8 +10,8 @@ updated: 2026-11-27
 ## Goal
 
 Add revision `0003_media` exactly as `Backend/docs/DATABASE.md` defines it: the `media`
-table with its fifteen constraints and the `media_immutable` trigger that keeps a row
-immutable except for one promotion and `deleted_at`.
+table with its seventeen constraints and the `media_immutable` trigger that keeps a row
+immutable except for one promotion and one frozen `deleted_at`.
 
 This is M3 in `PLAN.md`. Storage buckets, grants and RLS are M12; the upload endpoint is
 M17.
@@ -20,11 +20,12 @@ M17.
 
 - [ ] `0003_media` creates `media` with every column, default and constraint in
       `DATABASE.md` §Media, including `media_object_unique`, `media_visibility_bucket`,
-      `media_promotion`, `media_object_path`, `media_size` (4 MB), `media_checksum`
-      (32 bytes), `media_alt_required`, `media_types` (PDF only in `evidence`) and
-      `media_image_dimensions`.
+      `media_promotion`, `media_deleted_after_upload`, `media_promoted_after_upload`,
+      `media_object_path`, `media_size` (4 MB), `media_checksum` (32 bytes),
+      `media_alt_required`, `media_alt_length` (not empty), `media_types` (PDF only in
+      `evidence`) and `media_image_dimensions`.
 - [ ] `prevent_media_mutation()` and the `media_immutable` trigger are copied verbatim,
-      including the three exception messages.
+      including every exception message.
 - [ ] Downgrade drops the trigger, the function and the table.
 - [ ] `media` is modelled in `app/models.py`; `alembic check` stays clean.
 - [ ] Database tests cover, each failing if the protection is removed:
@@ -37,9 +38,13 @@ M17.
         and an image without dimensions are refused;
       - editing any pinned column raises `media rows are immutable; create a new row`;
       - a staged row can be promoted once (bucket to `site-media`, public, `promoted_at`);
+      - a soft-deleted staged row cannot be promoted, including when `deleted_at` is set in
+        the promotion statement itself;
       - a public row cannot return to private or change bucket, and an evidence row
         cannot become public;
-      - `deleted_at` is the only change a public row accepts, and undelete is refused;
+      - `deleted_at` is the only change a public row accepts, a set `deleted_at` is frozen,
+        and neither timestamp may precede `uploaded_at`;
+      - an empty `alt` is refused outside `evidence`;
       - a structural test pins the trigger and the function body.
 - [ ] `uv run ruff check .`, `uv run mypy app` and `uv run pytest` pass; `alembic check`
       is clean; `downgrade base` then `upgrade head` succeeds. Output quoted.
@@ -71,23 +76,24 @@ not reorder or reword the exception messages.
   default gen_random_uuid()`, `visibility media_visibility`, `bucket`, `object_path`,
   `mime_type`, `size_bytes bigint`, `width integer`, `height integer`, `alt`,
   `checksum_sha256 bytea`, `uploaded_by uuid references staff (user_id) on delete
-  restrict`, `uploaded_at default now()`, `promoted_at`, `deleted_at`. The fifteen
-  constraints are the primary key, `media_object_unique` and the thirteen
+  restrict`, `uploaded_at default now()`, `promoted_at`, `deleted_at`. The seventeen
+  constraints are the primary key, `media_object_unique` and the fifteen
   `sa.CheckConstraint` entries with the document's expressions. The table has no index,
   as `DATABASE.md` specifies. `prevent_media_mutation()` and `media_immutable` are
   `op.execute` copies of the document, verbatim, and the trigger is `before update` only.
   Downgrade drops the trigger, then the function, then the table.
 - **2026-11-27 — Tests.** Added `Backend/tests/test_media_schema.py`: the empty table; a
   staged image and an evidence PDF happy path; the unique `(bucket, object_path)` pair;
-  every check constraint refused with its named constraint; the 120-character and
-  relative-path bounds; 1/4194304-byte size acceptance and 0/negative/over-4 MB refusal;
-  31/33-byte checksums; all ten pinned columns; one successful promotion and a refused
-  second one; a public row refused private or a bucket change; an evidence row refused
-  promotion; a private row refused a bucket change; `deleted_at` accepted on a public row
-  with undelete and alt edits refused; a catalog test pinning the installed constraint
-  set; and a structural test pinning the trigger (`before update`, row level, not insert
-  or delete) and every pinned column, branch and exception message in the installed
-  function.
+  the visibility, promotion, path, size, checksum, alt and image-dimension checks refused
+  with their named constraints (`media_bucket` and `media_mime_length` are catalog-only);
+  the 120-character and relative-path bounds; 1/4194304-byte size acceptance and
+  0/negative/over-4 MB refusal; 31/33-byte checksums; all ten pinned columns; one
+  successful promotion and a refused second one; a public row refused private or a bucket
+  change; an evidence row refused promotion; a private row refused a bucket change;
+  `deleted_at` accepted on a public row with undelete and alt edits refused; a catalog
+  test pinning the installed constraint set; and a structural test pinning the trigger
+  (`before update`, row level, not insert or delete) and every pinned column, branch and
+  exception message in the installed function.
 - **2026-11-27 — Test-harness correction caused by the new foreign key.** The staff
   helper `cleanup_committed_staff` truncated `staff` alone; the new
   `media.uploaded_by` reference makes PostgreSQL refuse that with
@@ -106,26 +112,57 @@ not reorder or reword the exception messages.
 - **2026-11-27 — Checks and round trip.** Ran ruff, mypy, pytest in default and importlib
   modes, `alembic check`, and `downgrade base` → `upgrade head` → `current` on the local
   development database; every command is quoted under `## Tests`.
+- **2026-11-27 — Review fixes: Medium 1–3, L2 and L5.** The promotion branch now refuses
+  a row whose current or incoming `deleted_at` is set, and a test covers a soft-deleted
+  staged row and a promotion that deletes in the same statement. A set `deleted_at` is
+  frozen with `media deletion cannot be changed`; `media_deleted_after_upload` and
+  `media_promoted_after_upload` refuse a timestamp before `uploaded_at`, and a test
+  accepts equal timestamps. `media_alt_length` now refuses the empty string. The catalog
+  test compares normalised `pg_get_constraintdef` for every documented constraint and
+  `pg_enum` labels for all thirteen enums, not just `(conname, contype)`. `DATABASE.md`
+  §Media gained the new condition, the two checks, the frozen deletion and the L3/L4
+  sentences; the model, revision and this log now say seventeen constraints (the README
+  names the tables but carries no count). The earlier claim that every check has a
+  behavioural test is corrected:
+  `media_bucket` and `media_mime_length` are catalog-only. The suite is 114 tests; the
+  boundary change was proven on a scratch copy and every command is quoted under
+  `## Tests`.
 
 ## Decisions made
 
 - **The document wins over the brief on the exception messages.** The brief and the work
-  file say "three exception messages"; `DATABASE.md` has three refusal branches but five
-  distinct `raise exception` messages (immutable row, undelete, public-row change,
-  promotion shape, non-promotion visibility change). All five are copied verbatim and
-  pinned by the structural test; none is reworded. Recorded under `## Open questions`.
-- **"Fifteen constraints" is the primary key, the unique pair and the thirteen checks.**
-  That is 15 objects in the document's `create table media` block. The `uploaded_by`
-  foreign key is the sixteenth constraint in `pg_constraint`; it is left unnamed so
+  file said "three exception messages"; `DATABASE.md` has three refusal branches but six
+  distinct `raise exception` messages after the review fix (immutable row, undelete,
+  frozen deletion, public-row change, promotion shape, non-promotion visibility change).
+  All six are copied verbatim and pinned by the structural test; none is reworded.
+  Recorded under `## Open questions`.
+- **"Seventeen constraints" is the primary key, the unique pair and the fifteen checks.**
+  That is 17 objects in the document's `create table media` block. The `uploaded_by`
+  foreign key is the eighteenth constraint in `pg_constraint`; it is left unnamed so
   PostgreSQL generates `media_uploaded_by_fkey`, matching the 0002 decision for foreign
-  keys. The catalog test pins all sixteen installed names and kinds, including the
+  keys. The catalog test pins all eighteen installed names and definitions, including the
   foreign key.
 - **Check constraints live in metadata, but `alembic check` cannot compare them.**
   Alembic 1.20's autogenerate has no check-constraint comparison (the same limitation
-  task 0002 recorded as L2). The thirteen expressions are copied verbatim into both
-  `app/models.py` and the revision, and `test_every_documented_constraint_is_installed`
-  pins the installed set by name and kind so a missing constraint is not silent drift;
-  every check also has a behavioural test that asserts its constraint name.
+  task 0002 recorded as L2). The fifteen expressions are copied verbatim into both
+  `app/models.py` and the revision, and
+  `test_every_documented_constraint_matches_its_definition` compares the normalised
+  `pg_get_constraintdef` of every documented constraint, so a changed bound or operator
+  fails the suite. `media_bucket` and `media_mime_length` are covered by that test only;
+  the other checks also have a behavioural test.
+- **A soft-deleted row cannot be promoted.** The promotion branch refuses a row whose
+  current or incoming `deleted_at` is set, so a row cannot be deleted and promoted in one
+  statement or promoted after deletion.
+- **Deletion is frozen and timestamps are ordered.** After the first `deleted_at`, any
+  other value (including null, caught earlier as undelete) raises
+  `media deletion cannot be changed`. `media_deleted_after_upload` and
+  `media_promoted_after_upload` require each timestamp to be at or after `uploaded_at`;
+  equality is accepted.
+- **Alt is non-empty when present.** `media_alt_length` now requires 1 to 120 characters
+  for a non-null `alt`; `evidence` may still omit it entirely.
+- **L3 and L4 are documented, not coded.** The database still accepts a direct public
+  insert and does not inspect `object_path` for `..`; the upload path and the M12 grants
+  carry those guarantees, and `DATABASE.md` §Media now says so.
 - **`media` is a Core `sa.Table`, not an ORM class.** No repository reads it yet; this is
   the same choice as `staff` in 0002 and keeps the unused ORM layer out.
 - **The trigger is `before update` only.** Insert is governed by the table constraints
@@ -150,18 +187,21 @@ New:
 
 Modified:
 
+- `Backend/docs/DATABASE.md` — §Media gained the new function condition, the two
+  timestamp checks, the non-empty alt bound, frozen deletion and the L3/L4 sentences
 - `Backend/app/models.py` — the `media` table and `media_visibility` enum
 - `Backend/tests/test_staff_schema.py` — cleanup truncates `media, staff`
 - `Backend/README.md` — layout rows for the model and test contents
 - `Backend/docs/work/README.md` — the orchestrator's 0003 index row, included as it stood
 
-No `Backend/docs/DATABASE.md`, runbook, `CONTRACT.md`, `ADMIN.md`, `Frontend/` or
-`Admin/` change; no dependency change (`uv.lock` untouched).
+No runbook, `CONTRACT.md`, `ADMIN.md`, `Frontend/` or `Admin/` change; no dependency
+change (`uv.lock` untouched).
 
 ## Migrations
 
 - `0003_media` (parent `0002_staff`) — creates `media` with its primary key,
-  `media_object_unique`, the thirteen checks and the `uploaded_by` foreign key, then
+  `media_object_unique`, the fifteen checks (including `media_deleted_after_upload` and
+  `media_promoted_after_upload`) and the `uploaded_by` foreign key, then
   `prevent_media_mutation()` and `media_immutable`. No index is created. Downgrade drops
   `media_immutable`, then `prevent_media_mutation()`, then the table.
 - The revision was applied to the development database (`0002_staff` → `0003_media`),
@@ -172,8 +212,8 @@ No `Backend/docs/DATABASE.md`, runbook, `CONTRACT.md`, `ADMIN.md`, `Frontend/` o
 
 ## Tests
 
-The block below is the actual run for this slice (PostgreSQL 18.7, `.env` target
-`leafclutch` at port 5434).
+The block below is the actual run for this slice after the review fixes (PostgreSQL
+18.7, `.env` target `leafclutch` at port 5434).
 
 ```
 $ uv run ruff check .
@@ -183,14 +223,14 @@ $ uv run mypy app
 Success: no issues found in 6 source files
 
 $ uv run pytest -q
-........................................................................ [ 67%]
-..................................                                       [100%]
-106 passed, 4 warnings in 0.78s
+........................................................................ [ 63%]
+..........................................                               [100%]
+114 passed, 4 warnings in 0.86s
 
 $ uv run pytest -q --import-mode=importlib
-........................................................................ [ 67%]
-..................................                                       [100%]
-106 passed, 4 warnings in 0.69s
+........................................................................ [ 63%]
+..........................................                               [100%]
+114 passed, 4 warnings in 0.70s
 
 $ uv run alembic check
 No new upgrade operations detected.
@@ -210,27 +250,26 @@ $ uv run alembic current
 ```
 
 The four warnings are the known `httpx`/Starlette deprecation and the Alembic
-`path_separator` deprecation carried from task 0002.
+`path_separator` deprecation carried from task 0002. `test_media_schema.py` alone is 55
+tests.
 
-Mutation check, scratch copy of `leafclutch_test` with `media_immutable` dropped:
-
-```
-$ TEST_DATABASE_URL=<scratch> uv run pytest -q tests/test_media_schema.py \
-    -k "pinned or promoted or public_row or evidence_row or private_row_cannot or deleted_at or staged_row_can or installed_trigger"
-16 failed, 3 passed, 28 deselected, 1 warning in 0.37s
-```
-
-The same check with `media_visibility_bucket` dropped instead:
+Constraint-drift proof: a scratch copy of `leafclutch_test` had `media_object_path`
+replaced with the same check bounded at 299 instead of 300. The new catalog test fails on
+the definition even though `alembic check` cannot see CHECK constraints:
 
 ```
-$ TEST_DATABASE_URL=<scratch> uv run pytest -q tests/test_media_schema.py \
-    -k "public_row_must or private_row_must"
-3 failed, 44 deselected, 1 warning in 0.20s
+$ TEST_DATABASE_URL=<scratch> uv run pytest -q \
+    tests/test_media_schema.py::test_every_documented_constraint_matches_its_definition
+E       Differing items:
+E       {'media_object_path': ('c', "... <= 299 ...")} !=
+E       {'media_object_path': ('c', "... <= 300 ...")}
+FAILED tests/test_media_schema.py::test_every_documented_constraint_matches_its_definition
+1 failed, 1 warning in 0.23s
 ```
 
-Both scratch databases were dropped. `test_media_schema.py` alone is 47 tests; the
-installed function and trigger were also read directly with `pg_get_functiondef` and
-`pg_get_triggerdef` and match `DATABASE.md`.
+The scratch database was dropped; the real test database was not altered. The earlier
+trigger-drop mutation check (16 failed) was run before the review fixes and is
+**superseded** by the current behavioural tests.
 
 ## Review
 
@@ -238,9 +277,11 @@ installed function and trigger were also read directly with `pg_get_functiondef`
 
 - `Backend/README.md` — the layout rows that name tables now list the `staff` and `media`
   tables and the media schema in the tests.
-- No `Backend/docs/DATABASE.md` change: this revision implements §Media as written, and
-  the brief forbids editing it.
-- No `Backend/docs/ADMIN.md` or `CONTRACT.md` change: no role, screen, payload or
+- `Backend/docs/DATABASE.md` — §Media now carries the deleted-row promotion guard, the
+  frozen `deleted_at` and its message, `media_deleted_after_upload`,
+  `media_promoted_after_upload`, the non-empty alt bound, and the L3/L4 notes on direct
+  inserts and object-path traversal. The matching function body is updated in place.
+- `Backend/docs/ADMIN.md` and `CONTRACT.md` do not change: no role, screen, payload or
   endpoint changed.
 - No OpenAPI change: no endpoint was added or changed.
 - No ADR: `Backend/docs/` has no ADR directory.
@@ -248,15 +289,16 @@ installed function and trigger were also read directly with `pg_get_functiondef`
 
 ## Open questions
 
-- The brief and acceptance criteria say "three exception messages", but
-  `DATABASE.md` §Media's function has five distinct `raise exception` messages in three
-  branches. All five were copied verbatim because the source document is the authority.
-  If "three" means something else (for example, a different function version), the
-  document and the brief disagree and that needs an orchestrator decision.
-- Alembic 1.20 does not compare CHECK constraints, so `alembic check` cannot prove the
-  thirteen checks. They are pinned by name and kind in a catalog test and exercised one
-  by one behaviourally, but a future edit to a check expression alone would not be
-  detected automatically. This is the same limitation recorded for `staff` in task 0002.
+- The brief and acceptance criteria originally said "three exception messages", but
+  `DATABASE.md` §Media's function now has six distinct `raise exception` messages in
+  three branches. All six were copied verbatim because the source document is the
+  authority. If "three" meant something else, the document and the brief disagree and
+  that needs an orchestrator decision.
+- Alembic 1.20 does not compare CHECK constraints, so `alembic check` cannot prove them.
+  `test_every_documented_constraint_matches_its_definition` now compares the normalised
+  `pg_get_constraintdef` of every documented constraint, so a changed bound or operator
+  fails the suite; the normalisation strips PostgreSQL's decorative parentheses and
+  whitespace, which is the trade-off for stability.
 - Promotion, signed URLs, storage buckets, grants and RLS remain M12/M17. This slice only
   installs the table and the database guard.
 
@@ -269,9 +311,14 @@ installed function and trigger were also read directly with `pg_get_functiondef`
 - The promotion workflow in FastAPI (M17): only the database transition was exercised.
 - The full validation runbook (`docs/runbooks/database-validation.sql`), which needs the
   content tables from M4 onwards.
-- Mutation proof covers the trigger and `media_visibility_bucket`; the other twelve
-  constraints are proven by their tests asserting the named constraint, not by dropping
-  each one on a scratch copy.
+- Not every constraint has a behavioural test: `media_bucket` and `media_mime_length` are
+  covered by the catalog definition test only. The other checks also have a behavioural
+  test that asserts the named constraint.
+- The constraint-drift mutation proof changed `media_object_path` from 300 to 299 on a
+  scratch copy; the other definitions are guarded by the same catalog comparison, not by
+  a per-constraint mutation run.
 - `media_mime_length` cannot be exercised with an allowed MIME type (all are under 100
-  characters); its installed name is pinned by the catalog test, and an unknown MIME is
-  proved refused by `media_types`. No behaviour test isolates the length check itself.
+  characters); its installed definition is pinned by the catalog test, and an unknown MIME
+  is proved refused by `media_types`.
+- L3 (a direct public insert is not prevented) and L4 (`..` in `object_path` is not
+  rejected) are documented for the M12/M17 work, not fixed in the database here.

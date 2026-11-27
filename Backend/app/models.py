@@ -113,6 +113,14 @@ media = sa.Table(
         name="media_promotion",
     ),
     sa.CheckConstraint(
+        "deleted_at is null or deleted_at >= uploaded_at",
+        name="media_deleted_after_upload",
+    ),
+    sa.CheckConstraint(
+        "promoted_at is null or promoted_at >= uploaded_at",
+        name="media_promoted_after_upload",
+    ),
+    sa.CheckConstraint(
         "char_length(object_path) between 1 and 300 and object_path !~ '^/'",
         name="media_object_path",
     ),
@@ -129,7 +137,7 @@ media = sa.Table(
         name="media_checksum",
     ),
     sa.CheckConstraint(
-        "alt is null or char_length(alt) <= 120",
+        "alt is null or char_length(alt) between 1 and 120",
         name="media_alt_length",
     ),
     sa.CheckConstraint(

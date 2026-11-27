@@ -3,9 +3,10 @@
 The table uses SQLAlchemy operations so `alembic check` compares it with app/models.py.
 
 The trigger and its function are copied verbatim from Backend/docs/DATABASE.md §Media.
-`prevent_media_mutation` is `before update` only: a staged row may be promoted once and a
-public row may only receive `deleted_at`, and nothing may be undeleted. Insert and delete
-are intentionally not guarded here; the publish gate and the reference checks own those.
+`prevent_media_mutation` is `before update` only: a staged, undeleted row may be promoted
+once, a public row may only receive one `deleted_at` value, a set `deleted_at` is frozen,
+and nothing may be undeleted. Insert and delete are intentionally not guarded here; the
+publish gate and the reference checks own those.
 
 Revision ID: 0003_media
 Revises: 0002_staff
@@ -48,6 +49,10 @@ begin
     raise exception 'media cannot be undeleted';
   end if;
 
+  if old.deleted_at is not null and new.deleted_at is distinct from old.deleted_at then
+    raise exception 'media deletion cannot be changed';
+  end if;
+
   if old.visibility = 'public' then
     if new.visibility <> 'public'
        or new.bucket <> old.bucket
@@ -58,7 +63,9 @@ begin
     if old.bucket <> 'media-staging'
        or new.bucket <> 'site-media'
        or old.promoted_at is not null
-       or new.promoted_at is null then
+       or new.promoted_at is null
+       or old.deleted_at is not null
+       or new.deleted_at is not null then
       raise exception 'promotion moves one staged row to site-media';
     end if;
   elsif new.visibility <> old.visibility
@@ -134,6 +141,14 @@ def upgrade() -> None:
             name="media_promotion",
         ),
         sa.CheckConstraint(
+            "deleted_at is null or deleted_at >= uploaded_at",
+            name="media_deleted_after_upload",
+        ),
+        sa.CheckConstraint(
+            "promoted_at is null or promoted_at >= uploaded_at",
+            name="media_promoted_after_upload",
+        ),
+        sa.CheckConstraint(
             "char_length(object_path) between 1 and 300 and object_path !~ '^/'",
             name="media_object_path",
         ),
@@ -150,7 +165,7 @@ def upgrade() -> None:
             name="media_checksum",
         ),
         sa.CheckConstraint(
-            "alt is null or char_length(alt) <= 120",
+            "alt is null or char_length(alt) between 1 and 120",
             name="media_alt_length",
         ),
         sa.CheckConstraint(
