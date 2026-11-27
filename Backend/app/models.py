@@ -1,9 +1,9 @@
 """SQLAlchemy models that define ``Base.metadata``.
 
-``staff`` and ``media`` exist at this milestone; later revisions add their tables here. The
-tables are written as SQLAlchemy Core tables: no repository or ORM session reads them yet,
-and ``alembic check`` compares metadata, which these definitions populate either way. An ORM
-class arrives with the first repository that needs one.
+``staff``, ``media`` and the content spine exist at this milestone; later revisions add
+their tables here. The tables are written as SQLAlchemy Core tables: no repository or ORM
+session reads them yet, and ``alembic check`` compares metadata, which these definitions
+populate either way. An ORM class arrives with the first repository that needs one.
 """
 
 import sqlalchemy as sa
@@ -163,5 +163,266 @@ media = sa.Table(
     sa.CheckConstraint(
         "mime_type not like 'image/%' or (width is not null and height is not null)",
         name="media_image_dimensions",
+    ),
+)
+
+# Created by revision 0001_extensions_enums, like the staff role.
+CONTENT_KIND = sa.Enum(
+    "landing_page",
+    "page_section",
+    "legal_page",
+    "service_group",
+    "service",
+    "project",
+    "proof_figure",
+    "testimonial",
+    "client_logo",
+    "settings",
+    name="content_kind",
+    create_type=False,
+)
+
+VERSION_STATUS = sa.Enum(
+    "draft", "in_review", "published", name="version_status", create_type=False
+)
+
+content_item = sa.Table(
+    "content_item",
+    Base.metadata,
+    sa.Column(
+        "id",
+        sa.Uuid(),
+        nullable=False,
+        server_default=sa.text("gen_random_uuid()"),
+    ),
+    sa.Column("kind", CONTENT_KIND, nullable=False),
+    sa.Column("path", sa.Text()),
+    sa.Column("slug", sa.Text()),
+    sa.Column(
+        "created_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.text("now()"),
+    ),
+    sa.Column(
+        "created_by",
+        sa.Uuid(),
+        sa.ForeignKey("staff.user_id", ondelete="RESTRICT"),
+        nullable=False,
+    ),
+    sa.Column(
+        "next_version",
+        sa.Integer(),
+        nullable=False,
+        server_default=sa.text("1"),
+    ),
+    sa.Column("archived_at", sa.DateTime(timezone=True)),
+    sa.Column(
+        "archived_by",
+        sa.Uuid(),
+        sa.ForeignKey("staff.user_id", ondelete="SET NULL"),
+    ),
+    sa.PrimaryKeyConstraint("id"),
+    # Composite target for the typed child tables. Redundant with the primary key, and
+    # cheaper than a trigger on every insert.
+    sa.UniqueConstraint("id", "kind", name="content_item_id_kind_key"),
+    sa.CheckConstraint("next_version > 0", name="content_item_next_version"),
+    sa.CheckConstraint(
+        "path is null or path ~ '^/[a-z0-9-]*(/[a-z0-9-]+)*$'",
+        name="content_item_path_format",
+    ),
+    sa.CheckConstraint(
+        "slug is null or slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$'",
+        name="content_item_slug_format",
+    ),
+    sa.CheckConstraint(
+        "kind not in ('landing_page', 'legal_page') or path is not null",
+        name="content_item_path_required",
+    ),
+    sa.CheckConstraint(
+        "kind not in ('service', 'project') or slug is not null",
+        name="content_item_slug_required",
+    ),
+    sa.CheckConstraint(
+        "kind <> 'settings' or (path is null and slug is null)",
+        name="content_item_settings_shape",
+    ),
+    sa.CheckConstraint(
+        "kind <> 'page_section' or (path is null and slug is null)",
+        name="content_item_section_shape",
+    ),
+    sa.CheckConstraint(
+        "archived_at is null or archived_by is not null",
+        name="content_item_archive",
+    ),
+    sa.Index(
+        "content_item_path_key",
+        "path",
+        unique=True,
+        postgresql_where=sa.text("path is not null"),
+    ),
+    sa.Index(
+        "content_item_kind_slug_key",
+        "kind",
+        "slug",
+        unique=True,
+        postgresql_where=sa.text("slug is not null"),
+    ),
+    sa.Index(
+        "content_item_settings_singleton",
+        "kind",
+        unique=True,
+        postgresql_where=sa.text("kind = 'settings'"),
+    ),
+    sa.Index(
+        "content_item_kind_idx",
+        "kind",
+        postgresql_where=sa.text("archived_at is null"),
+    ),
+)
+
+content_version = sa.Table(
+    "content_version",
+    Base.metadata,
+    sa.Column(
+        "id",
+        sa.Uuid(),
+        nullable=False,
+        server_default=sa.text("gen_random_uuid()"),
+    ),
+    sa.Column(
+        "item_id",
+        sa.Uuid(),
+        sa.ForeignKey("content_item.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column("version_number", sa.Integer(), nullable=False),
+    sa.Column(
+        "status",
+        VERSION_STATUS,
+        nullable=False,
+        server_default=sa.text("'draft'::version_status"),
+    ),
+    sa.Column(
+        "created_by",
+        sa.Uuid(),
+        sa.ForeignKey("staff.user_id", ondelete="RESTRICT"),
+        nullable=False,
+    ),
+    sa.Column(
+        "updated_by",
+        sa.Uuid(),
+        sa.ForeignKey("staff.user_id", ondelete="RESTRICT"),
+    ),
+    sa.Column(
+        "created_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.text("now()"),
+    ),
+    sa.Column(
+        "updated_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.text("now()"),
+    ),
+    sa.Column("submitted_at", sa.DateTime(timezone=True)),
+    sa.Column("published_at", sa.DateTime(timezone=True)),
+    sa.Column(
+        "published_by",
+        sa.Uuid(),
+        sa.ForeignKey("staff.user_id", ondelete="RESTRICT"),
+    ),
+    sa.PrimaryKeyConstraint("id"),
+    sa.UniqueConstraint(
+        "item_id",
+        "version_number",
+        name="content_version_item_id_version_number_key",
+    ),
+    # Composite target for content_publication's (item_id, version_id) foreign key.
+    sa.UniqueConstraint("item_id", "id", name="content_version_item_id_id_key"),
+    sa.CheckConstraint("version_number > 0", name="content_version_number"),
+    sa.CheckConstraint(
+        "(status = 'published') = (published_at is not null)",
+        name="content_version_published",
+    ),
+    sa.CheckConstraint(
+        "(status = 'published') = (published_by is not null)",
+        name="content_version_publisher",
+    ),
+    sa.CheckConstraint(
+        "status <> 'in_review' or submitted_at is not null",
+        name="content_version_review",
+    ),
+    sa.Index(
+        "content_version_one_open",
+        "item_id",
+        unique=True,
+        postgresql_where=sa.text("status in ('draft', 'in_review')"),
+    ),
+    sa.Index("content_version_item_status_idx", "item_id", "status"),
+)
+
+content_publication = sa.Table(
+    "content_publication",
+    Base.metadata,
+    sa.Column(
+        "item_id",
+        sa.Uuid(),
+        sa.ForeignKey("content_item.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column("version_id", sa.Uuid(), nullable=False),
+    sa.Column(
+        "published_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.text("now()"),
+    ),
+    sa.Column(
+        "published_by",
+        sa.Uuid(),
+        sa.ForeignKey("staff.user_id", ondelete="RESTRICT"),
+        nullable=False,
+    ),
+    sa.PrimaryKeyConstraint("item_id"),
+    sa.ForeignKeyConstraint(
+        ["item_id", "version_id"],
+        ["content_version.item_id", "content_version.id"],
+        name="content_publication_version_fk",
+        ondelete="RESTRICT",
+    ),
+)
+
+content_seo = sa.Table(
+    "content_seo",
+    Base.metadata,
+    sa.Column(
+        "version_id",
+        sa.Uuid(),
+        sa.ForeignKey("content_version.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column("seo_title", sa.Text()),
+    sa.Column("seo_description", sa.Text()),
+    sa.Column(
+        "seo_noindex",
+        sa.Boolean(),
+        nullable=False,
+        server_default=sa.text("false"),
+    ),
+    sa.Column(
+        "og_image_id",
+        sa.Uuid(),
+        sa.ForeignKey("media.id", ondelete="RESTRICT"),
+    ),
+    sa.PrimaryKeyConstraint("version_id"),
+    sa.CheckConstraint(
+        "seo_title is null or char_length(seo_title) between 1 and 60",
+        name="content_seo_title_length",
+    ),
+    sa.CheckConstraint(
+        "seo_description is null or char_length(seo_description) between 1 and 160",
+        name="content_seo_description_length",
     ),
 )

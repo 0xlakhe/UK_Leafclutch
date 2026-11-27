@@ -313,8 +313,14 @@ def commit_two_admins(engine: Engine) -> tuple[uuid.UUID, uuid.UUID]:
 def cleanup_committed_staff(engine: Engine, user_ids: list[uuid.UUID]) -> None:
     """Remove committed test rows; TRUNCATE is needed because the last Admin cannot be deleted."""
     with engine.begin() as cleanup:
-        # media.uploaded_by references staff, so PostgreSQL refuses a lone TRUNCATE.
-        cleanup.execute(sa.text("truncate table media, staff"))
+        # media and the content tables reference staff, so PostgreSQL refuses a lone
+        # TRUNCATE. None of them carries a committed row: the suite rolls every one back.
+        cleanup.execute(
+            sa.text(
+                "truncate table content_seo, content_publication, content_version, "
+                "content_item, media, staff"
+            )
+        )
         cleanup.execute(sa.delete(auth_users).where(auth_users.c.id.in_(user_ids)))
 
 
