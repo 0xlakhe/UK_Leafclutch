@@ -204,24 +204,27 @@ wherever a form below shows a public name.
 | `privacy_note.text` | `privacy_text` | `DATABASE.md:620` |
 | `privacy_note.link_label` | `privacy_link_label` | `DATABASE.md:621` |
 | `image` | `image_id` | `DATABASE.md:622` |
-| `about.body` | `section_paragraph[]`, `text` per paragraph | `DATABASE.md:690-700` |
+| `about.body` | `section_paragraph` rows †, `text` per paragraph | `DATABASE.md:690-700` |
 | `company.legal_name` | `legal_name` | `DATABASE.md:1300` |
 | `company.trading_name` | `trading_name` | `DATABASE.md:1301` |
 | `company.country` | `country` | `DATABASE.md:1302` |
-| `company.address` | `settings_address_line[]`, `line` per row | `DATABASE.md:1359-1367` |
+| `company.address` | `settings_address_line` rows †, `line` per row | `DATABASE.md:1359-1367` |
 | `logo` | `site_logo_id` | `DATABASE.md:1314` |
 | `contact.email` | `contact_email` | `DATABASE.md:1303` |
 | `contact.phone` | `contact_phone` | `DATABASE.md:1304` |
 | `contact.phone_hours` | `contact_phone_hours` | `DATABASE.md:1305` |
 | `contact.hours.summary` | `hours_summary` | `DATABASE.md:1306` |
 | `contact.hours.timezone` | `hours_timezone` | `DATABASE.md:1307` |
-| `locations[]` | `settings_location[]` (`name`, `country`, `phone`, `phone_hours`) | `DATABASE.md:1369-1382` |
-| `locations[].address` | `settings_location_address_line[]`, `line` per row | `DATABASE.md:1384-1400` |
-| `footer_links[]` | `settings_footer_link[]` (`label`, `href`) | `DATABASE.md:1402-1416` |
+| `locations[]` | `settings_location` rows † (`name`, `country`, `phone`, `phone_hours`) | `DATABASE.md:1369-1382` |
+| `locations[].address` | `settings_location_address_line` rows †, `line` per row | `DATABASE.md:1384-1400` |
+| `footer_links[]` | `settings_footer_link` rows † (`label`, `href`) | `DATABASE.md:1402-1416` |
 | `seo_defaults.title_suffix` | `seo_title_suffix` | `DATABASE.md:1309` |
 | `seo_defaults.description` | `seo_description` | `DATABASE.md:1310` |
 | `seo_defaults.og_image` | `seo_og_image_id` | `DATABASE.md:1311` |
 | `form.services` | not in a request body: computed at read time from published services | `CONTRACT.md` "Site settings"; decision 48 |
+
+A `†` entry is the database table the records live in, not a request key: the array key
+in the `PATCH` body is OpenAPI's (U9), exactly as §4.3.1 states for the section children.
 
 The same rule covers the other kinds: `project_version.images[]` is a row per image with
 `media_id`, `project_version.technologies[]` is `project_technology[]` with `name`, and
@@ -272,7 +275,9 @@ browser.
 | Response | one page: landing or legal |
 | Errors | `404 not_found` for no published page at that path |
 
-The landing page is `type: "landing"`. The section array is the render order, fixed from
+The landing page is `type: "landing"` and returns the `sections[]` shape below. A legal
+path returns `type: "legal"` and the document shape in §3.1.12, not `sections[]`. The
+section array is the render order, fixed from
 PRD §5 and **not editable in Phase 1**; an editor orders items inside a section, never
 the sections themselves (`CONTRACT.md` "Landing page"; `DATABASE.md` `page_section`).
 Each section's `key` doubles as its anchor (`#services`, `#work`), so a key can never be
@@ -478,9 +483,10 @@ The admin read also carries each question's `status` and order; see §4.3. Only
 #### 3.1.11 Contact
 
 Key `contact`; `nav_label` is required at publish. The section needs a heading, at least
-one promise and a non-empty privacy note, plus a live privacy notice
-(`CONTRACT.md` "What blocks a publish"; decision 27). Email, phone, hours and locations
-are **not** section fields: they come from settings (§3.2).
+one promise and a non-empty privacy note (`CONTRACT.md:491`). The live privacy notice is
+a **landing-page** gate, not a section gate: the page refuses to publish without one
+(`CONTRACT.md:488`), and decision 27 states the two as one check. Email, phone, hours and
+locations are **not** section fields: they come from settings (§3.2).
 
 | Field | Type | Required | Limit | Control and notes |
 | --- | --- | --- | --- | --- |
@@ -496,6 +502,35 @@ are **not** section fields: they come from settings (§3.2).
 
 `form.services` is computed, not edited. When it is empty the service field is hidden
 and the enquiry sends `service: null` (`CONTRACT.md` "What the browser sends").
+
+#### 3.1.12 Legal page
+
+A legal path returns `type: "legal"` and this document shape (`CONTRACT.md:638-698`).
+Blocks are edited on the legal-page screen; the four kinds, their limits and the
+add/remove/reorder rules are in §4.3.1.
+
+| Field | Type | Required | Limit | Control and notes |
+| --- | --- | --- | --- | --- |
+| `type` | string | fixed | — | `legal`. |
+| `path` | string | fixed | — | `/privacy`, `/cookies`, `/terms` or `/accessibility`; set at create, no path edit (§4.3.1). |
+| `revision` | integer | read-only | — | legal page version number; increments on each publish. |
+| `published_at` | ISO 8601 | read-only | — | null when there is no live page. |
+| `seo.title` | string | yes at publish | 60 | non-empty and unique across live pages (NF-5). |
+| `seo.description` | string | yes at publish | 160 | non-empty and unique across live pages (NF-5). |
+| `seo.og_image` | media object or null | no | 0–1 | same shape as `images[]`; host-free `/media/...` URL. |
+| `seo.noindex` | boolean | no | — | default `false` (`DATABASE.md:490`); no editor control is defined (U1). |
+| `title` | string | yes at publish | 70 | rendered as the page's `h1`; the footer uses `label` from `/routes`, not this. |
+| `updated_on` | date | read-only | — | the publication instant's date in `Europe/London`, formatted as a UK date; never the server's session date. |
+| `effective_on` | date | always | — | the draft may hold null, meaning the London publish date; a set date is shown as written and may be in the future. |
+| `blocks[]` | array | yes | at least 1 | add, remove and reorder; limits in §4.3.1. |
+| `blocks[].kind` | enum | yes | — | `h2`, `p`, `ul`, `table`. |
+| `blocks[].text` | string | yes for `h2` and `p` | `h2` 60, `p` 2000 | plain text; no HTML or Markdown. |
+| `blocks[].items[]` | string[] | yes for `ul` | 1–12 items, 200 each | list items. |
+| `blocks[].columns[]` | string[] | yes for `table` | count not stated | column labels; the editor owns them (U10). |
+| `blocks[].rows[][]` | string[][] | yes for `table` | 1–30 rows | one cell per column; cell length not stated. |
+
+`label` is the footer text and is returned by `/routes`, not here; the company identity
+line above the blocks comes from settings (`CONTRACT.md` "Legal page").
 
 ### 3.2 `GET /api/v1/public/settings`
 
@@ -760,7 +795,7 @@ the project's own (`DATABASE.md:836-848`).
 | `group_item_id` | uuid | yes | — | the group it belongs to. |
 | `title` | string | yes | 60 | unique across the set; `__other__` refused. |
 | `summary` | string | yes | 160 | outcome-led sentence. |
-| `sort_order` † | integer | no | — | order inside the group; `DATABASE.md:884`. |
+| `sort_order` † | integer | no | — | order inside the group; `DATABASE.md:883`. |
 
 **Project — `project_version` plus children**
 
@@ -771,9 +806,9 @@ the project's own (`DATABASE.md:836-848`).
 | `client_need` | string | yes | 280 | the problem, in one or two sentences. |
 | `built` | string | yes | 280 | what was built. |
 | `result` | string or null | no | 280 | claiming a result needs the `result` scope. |
-| `sort_order` † | integer | no | — | live order in Featured work; `DATABASE.md:970`. |
-| `technologies[]` | `project_technology[]` | no | 0–8; `name` 40 † | `name` per row; `DATABASE.md:990-1000`. |
-| `images[]` | `project_image[]` | no | 0–3; `media_id` †, `sort_order` † | landscape only, 16:10 at render; `DATABASE.md:1003-1015`. |
+| `sort_order` † | integer | no | — | live order in Featured work; `DATABASE.md:963`. |
+| `technologies[]` | `project_technology[]` | no | 0–8; `name` 40 † | `name` per row; `DATABASE.md:983-993`. |
+| `images[]` | `project_image[]` | no | 0–3; `media_id` †, `sort_order` † | landscape only, 16:10 at render; `DATABASE.md:995-1003`. |
 
 **Proof figure — `proof_figure_version`**
 
@@ -815,6 +850,9 @@ the project's own (`DATABASE.md:836-848`).
 | `blocks[].columns[]` | string[] | yes for `table` | count not stated | column labels; the cookies sample uses Cookie, Purpose, Duration, and the prose also names provider. |
 | `blocks[].rows[][]` | string[][] | yes for `table` | 1–30 rows | one cell per column; cell length not stated. |
 
+`revision` and `updated_on` are derived and read-only, not body fields; the public shape
+is §3.1.12.
+
 #### 4.3.2 Shared item chrome
 
 Every item screen shows `status` (`draft`, `in_review`, `published`, `unpublished`,
@@ -838,7 +876,7 @@ editable (`ADMIN.md:234`). `submitted_at` is not named as a field (§12).
 | --- | --- | --- | --- |
 | `POST /content/{item_id}/publish` | Admin | `If-Match` | `revision`, `warnings[]`, revalidation state |
 | `POST /pages/{item_id}/publish` | Admin | `If-Match`, `{page_version_id, sections[]}` | `revision`, `warnings[]`, `blockers[]` |
-| `POST /content/{item_id}/unpublish` | Admin | `If-Match` | item state; pointer removed, draft created |
+| `POST /content/{item_id}/unpublish` | Admin | `If-Match` | item state; pointer removed, draft created or the in-review version kept |
 | `POST /content/{item_id}/archive` | Admin | `If-Match`, `{confirm_title}` | item state `archived` |
 | `POST /content/{item_id}/restore` | Admin | — | item state `unpublished`, or the open draft that survived |
 | `POST /content/{item_id}/delete` | Admin | `If-Match`, `{confirm_title}` | `204` |
@@ -851,10 +889,11 @@ editable (`ADMIN.md:234`). `submitted_at` is not named as a field (§12).
   may carry `warnings[]` for a non-blocking Should-level issue (A13). The page gates are
   all ten sections live, both SEO fields, a live privacy notice and published settings
   (`CONTRACT.md` "What blocks a publish").
-- **Unpublish** deletes the publication pointer and creates a draft copy from the last
-  published version in the same transaction (decision 69). It names the public path and
-  warns that the page disappears within a minute (`ADMIN.md` §3). An existing open draft
-  is reused, never duplicated.
+- **Unpublish** deletes the publication pointer and leaves the item on a draft copy of
+  the last published version — created in the same transaction — or on the existing
+  in-review version, which stays in review (`ADMIN.md:522`; decision 69). It names the
+  public path and warns that the page disappears within a minute (`ADMIN.md` §3). An
+  existing open draft is reused, never duplicated.
 - **Archive** is the normal delete: it unpublishes first, then marks the item archived in
   one transaction; it creates no draft. Archiving the landing page archives its sections
   (`ADMIN.md` §5; decision 70).
@@ -900,7 +939,8 @@ result or mark needs a new approval before it can publish (decision 31; `ADMIN.m
 | `scopes[]` | enum[] | yes | subject-dependent | project: `client_name`, `result`, `mark`, `screenshots`; figure: `figure`; testimonial: `quote` plus optional `client_name`; logo: `mark` plus optional `client_name`. |
 | `evidence_media_id` | uuid or null | no | evidence bucket | email or document in the private evidence bucket. |
 | `recorded_by` | string | read-only | — | the Admin who recorded it. |
-| `state` | enum | read-only | — | `live`, `awaiting approval`, `approval missing`, `expired`, `revoked`. |
+| `state` | enum | read-only | — | **Provisional key and values**, inferred from the screen badges (`ADMIN.md:179-180`): `live`, `awaiting approval`, `approval missing`, `expired`, `revoked`. ADMIN names no response key; OpenAPI defines it (U9). |
+| `note` | string | yes on revoke | 500 † | the revocation note, stored as `revocation_note`; ADMIN names no limit, DATABASE caps it at 500 (`DATABASE.md:1548`). |
 
 `subject_kind` and `recorded_by` are derived from the version and the caller and are not
 in the request body. The revoke body is `{note}`, stored as `revocation_note`
@@ -935,7 +975,7 @@ Evidence is never returned by `GET /media`: that list is `media-staging` and
 | `type` | string | read-only | — | MIME type, shown but never on the public wire (decision 53). |
 | `size_bytes` | integer | read-only | ≤ 4MB | shown; never on the public wire. |
 | `state` | enum | read-only | — | `staged`, `public`, `unused`, `deleted`. |
-| `role` † | enum | no | — | `project_image`, `about_image`, `og_image`, `client_logo`, `site_logo` (`DATABASE.md:169-175`); filter and media-picker scope. |
+| `role` † | enum | no | — | `version_media.role` (`DATABASE.md:4026-4046`), values `project_image`, `about_image`, `og_image`, `client_logo`, `site_logo` (`DATABASE.md:169-175`); ADMIN names `role` as a `GET /media` filter (`ADMIN.md:343`), not a row schema. |
 | `usage` † | integer or object[] | read-only | — | reference count in the list, references in the detail; ADMIN says "with usage" but names no key. |
 | `uploaded_by` † | string | read-only | — | staff name (`DATABASE.md:270`). |
 | `uploaded_at` | ISO 8601 | read-only | — | upload time. |
@@ -944,11 +984,12 @@ Evidence is never returned by `GET /media`: that list is `media-staging` and
 
 The media record is immutable: correcting alt text or replacing a file creates a **new
 record**, and the old one stays while a version or approval references it
-(`CONTRACT.md` "Media"; decision 37). "Replace" is an action, not a state: it uploads a
-new file, creates a new row and repoints the reference. The media picker states are
-idle, uploading with progress, staged ("Publishes with the page"), public, unused,
-deleted, alt-text error, type/size/pixel error, upload failed with retry; "replace" is
-an action available on a row, not one of those states.
+(`CONTRACT.md` "Media"; decision 37). ADMIN lists "replace" among the picker states
+(`ADMIN.md:679-681`); it is an action that creates a new row: it uploads a new file,
+repoints the reference and leaves the old row in place, so it belongs on a row, not in
+the picker's state list (§11.2 C8). The picker states are idle, uploading with progress,
+staged ("Publishes with the page"), public, unused, deleted, alt-text error,
+type/size/pixel error and upload failed with retry.
 
 Accepted types are JPEG, PNG and WebP for site media, plus PDF for evidence, checked by
 magic bytes. The size cap is 4MB, the pre-decode guard is 40MP and 8192px per side, work
@@ -1099,17 +1140,17 @@ inactive, last Admin. A password reset and an MFA reset are audit-logged (A14, A
 | `occurred_at` | ISO 8601 | read-only | — | sign-in time. |
 
 The audit log is append-only; the sign-in log is separate because it holds address and
-agent hashes (`ADMIN.md` §10). The revalidation queue's exact keys are not in ADMIN.md:
-`tags`, `status`, `attempts`, `next_attempt_at`, `last_error` exist only in
-`DATABASE.md:1715-1734` (U14). `ADMIN.md` §11 names `/admin/revalidation` and
-`GET /revalidation`, but §3 defines no such route; do not build a table from the columns
-before the route and row schema are settled.
+agent hashes (`ADMIN.md` §10). `GET /revalidation` is defined in §4 (`ADMIN.md:363`), but
+the §3 screen route `/admin/revalidation` is not: §11 names the screen and §3 lists none
+(U14). The queue's exact row keys are not in ADMIN.md either: `tags`, `status`,
+`attempts`, `next_attempt_at`, `last_error` exist only in `DATABASE.md:1715-1734`. Do
+not build a table from the columns before the screen route and row schema are settled.
 
 ### 4.12 Preview — 1 endpoint
 
 | Method and path | Auth | Request fields | Response fields |
 | --- | --- | --- | --- |
-| `GET /preview?path=` | both (legal_page: Admin) | `path` | public shape with drafts, `preview: true`, staged media `url` |
+| `GET /preview` | both (legal_page: Admin) | `path` | public shape with drafts, `preview: true`, staged media `url` |
 
 | Field | Type | Required | Limit | Notes |
 | --- | --- | --- | --- | --- |
@@ -1141,7 +1182,7 @@ route is in `ADMIN.md` §3.
 | `/admin/services/[itemId]` | content read/patch/submit/publish/unpublish/archive/delete/versions |
 | `/admin/projects` | `GET /content?kind=project`, `POST /content` |
 | `/admin/projects/[itemId]` | content read/patch/submit/publish/unpublish/archive/delete/versions, approvals |
-| `/admin/proof` | `GET /content?kind=proof_figure`, `testimonial`, `client_logo`; `POST /content` |
+| `/admin/proof` | `GET /content?kind=proof_figure`, `testimonial`, `client_logo`; `GET /approvals`; `POST /content` |
 | `/admin/proof/proof_figure/[itemId]` | content read/patch/submit/publish/unpublish/archive/delete, approvals |
 | `/admin/proof/testimonial/[itemId]` | the same proof endpoints for `testimonial` |
 | `/admin/proof/client_logo/[itemId]` | the same proof endpoints for `client_logo`; no page slot (D-9) |
@@ -1154,9 +1195,14 @@ route is in `ADMIN.md` §3.
 | `/admin/staff` | `GET /staff`, `POST /staff/invites`, `PATCH /staff/{user_id}`, password and MFA resets |
 | `/admin/audit` | `GET /audit`, `GET /sign-ins` |
 | `/admin/account` | `GET /me`, Supabase Auth TOTP enrolment |
-| `/preview<path>` | `GET /preview?path=` |
-| `/admin/revalidation` | `GET /revalidation`; the route is named in §11 but absent from §3 (U14) |
+| `/preview<path>` | `GET /preview` |
+| `/admin/revalidation` | `GET /revalidation`; the screen route is named in §11 but absent from §3 (U14) |
 | Evidence | no screen; `POST /evidence` and `GET /evidence/{media_id}/url` from the approval panel (U6) |
+
+`GET /approvals` has no screen of its own: `ADMIN.md` §3 defines no `/admin/approvals`
+route, so the approval list is the panel on `/admin/proof`, filtered by `subject_kind`,
+and the approval state shown on `/admin/projects`. `POST /auth/sign-out` is a header
+action on every admin screen, not a route in this index.
 
 ## 6. Build order
 
@@ -1174,8 +1220,8 @@ heavy ships before the approval and settings surfaces are audited.
    needed before any project, figure, testimonial or logo can publish.
 3. **Slice 3 — staff, audit, export, revalidation operations.** Invites, role/active
    changes, resets, `GET /audit`, `GET /sign-ins`, the export path's audit row and the
-   revalidation queue once its route and row schema are defined (U14). Staff removal and
-   the invite landing page wait on U16/U17.
+   revalidation queue once its screen route and row schema are defined (U14). Staff
+   removal and the invite landing page wait on U16/U17.
 
 ## 7. Field limits
 
@@ -1238,11 +1284,13 @@ An Admin may publish a draft directly, skipping review. Editing a published item
 a new draft copied from live; the live version is untouched. One open version per item;
 the drafts endpoint returns the existing one rather than duplicating it (`ADMIN.md` §5).
 
-**Unpublish returns to Draft.** Deleting the publication pointer creates a draft copy
-from the last published version in the same transaction (decision 69). Unpublishing the
-landing page also removes its sections' pointers and ensures a draft for each of the ten
-sections, so it can be republished. Unpublishing one section removes only that section's
-pointer; the others keep theirs. An existing open draft is reused, never duplicated.
+**Unpublish leaves a draft or the in-review version.** Deleting the publication pointer
+creates a draft copy from the last published version in the same transaction, or keeps
+the open in-review version, which stays in review; an existing open draft is reused,
+never duplicated (`ADMIN.md:522`; decision 69). Unpublishing the landing page also
+removes its sections' pointers and ensures a draft for each of the ten sections, so it
+can be republished. Unpublishing one section removes only that section's pointer; the
+others keep theirs.
 
 **Archive is the normal delete.** It unpublishes first, then marks the item archived, in
 one transaction; it creates no draft. Archiving the landing page archives its sections.
@@ -1336,10 +1384,11 @@ focus trap, reduced motion respected, and no colour-only status (`ADMIN.md` §3,
 
 ## 11. Conflicts, drift and unspecified
 
-Neither list is resolved here. Where the two documents disagree, both citations are
-given; where a request body or response key is missing, the OpenAPI schema must settle it
-before the control is built. "Drift" means one document is stale; "gap" means neither
-defines the thing. Only C1, C3, C4 and C7 are true conflicts.
+Neither list is resolved here. Where the sources disagree — two documents, or one
+document against itself — both citations are given; where a request body or response key
+is missing, the OpenAPI schema must settle it before the control is built. "Drift" means
+one statement is stale and there is one correct reading; "gap" means neither defines the
+thing. Only C1, C3, C4, C6 and C7 need a decision.
 
 ### 11.1 Conflicts
 
@@ -1348,6 +1397,7 @@ defines the thing. Only C1, C3, C4 and C7 are true conflicts.
 | C1 | `phone_hours` shape, and which field carries the 120-character hours limit | `CONTRACT.md:721-728`: `phone_hours` is null and `hours` is the object `{summary, timezone}`. `CONTRACT.md:1111`: the limit is named against `phone_hours.summary`, "with `timezone` Europe/London". | `ADMIN.md:718`: the typed column is `contact_phone_hours`, text. `DATABASE.md:1304-1305`: `contact_phone_hours text`, and the phone/hours constraint is a paired null check. The same text-column shape appears on `settings_location.phone_hours` (`DATABASE.md:1369-1381`). | The API decides whether phone hours are one text column or a summary plus timezone. Until it does, a single text input can map to `contact_phone_hours`; do not bind one control to both `phone_hours` and `hours.summary`, and do not render a timezone picker. The limit is 120 either way. |
 | C3 | `next_steps` title and body limits | `CONTRACT.md:1102`: 1–4 items; `title` 80, `body` 200. | `DATABASE.md:758-763`: `contact_next_step.title` ≤ 40 and `body` ≤ 160. | **Cap the form at 40/160 until the two are reconciled.** The Pydantic limit does not settle it: it is built from the same CONTRACT row that says 80/200, so a form sending 60 characters is accepted by Pydantic and refused by the database. Change both sources in one revision; do not ship 80/200 first. |
 | C4 | `slug` and `path` optionality on create | `ADMIN.md:324`: `POST /content` takes `{kind, path?, slug?}` — both optional. | `CONTRACT.md:396-397`: service and project records keep a `slug` for Phase 2. `DATABASE.md:348-353`: a `legal_page` and `landing_page` require a path, and a `service` and `project` require a slug. | The create form cannot assume either is optional. For a service or project, a missing slug reaches a database refusal; for a legal page, a missing path does. Make the field required for the kinds that need it, or wait for OpenAPI. |
+| C6 | Preview role for settings | `ADMIN.md:364`: `GET /preview` is "both (legal_page: Admin)" and names no settings restriction. | `ADMIN.md:390-392`: "`legal_page` and `settings` require Admin on every content read and write, version read and preview". | An Editor's preview of settings is `403` under the prose and unspecified under the table. Do not offer it until the two statements agree; the API must pick one. |
 | C7 | Sign-in log route | `ADMIN.md:202`: one screen, `/admin/audit`, covers "Audit log and sign-in log". | `ADMIN.md:362`: `GET /sign-ins`; `ADMIN.md:742`: the sign-in log is read by `/admin/sign-ins`, Admins. | The route set is unresolved; do not create a separate `/admin/sign-ins` navigation entry until it is confirmed. Both calls exist in the endpoint inventory. |
 
 ### 11.2 Drift and gaps
@@ -1356,7 +1406,7 @@ defines the thing. Only C1, C3, C4 and C7 are true conflicts.
 | --- | --- | --- | --- | --- |
 | C2 (drift) | `locations[].phone_hours` shape | `CONTRACT.md:776-778`: a location with a phone "carries `phone_hours` in its own timezone", with "the same shape as `contact.hours`" (an object). `CONTRACT.md:735-736` shows `phone_hours: null`, and `CONTRACT.md:1108-1110` gives `location.phone` 32 but no `location.phone_hours` limit. | `DATABASE.md:1369-1381`: `settings_location.phone_hours text`. | This is the location half of C1, not a separate conflict: a text column and an object need different controls. No limit exists, so do not add one. Wait for OpenAPI, then use the same shape as C1. |
 | C5 (drift) | M8: settings unpublished while the landing page is live | `ADMIN.md:930-931`: "Settings can be unpublished while the landing page is live, which would empty the site frame and legal identity; a gate needs a decision." | `Backend/docs/work/PLAN.md:220-224` and `PROGRESS.md:310`: the owner accepted M8 on 27 November, no gate, risk recorded and not mitigated. | No gate is the accepted behaviour, but ADMIN.md still calls it open. Build no gate; flag the doc drift to the orchestrator. |
-| C6 (gap) | Preview role for settings | `ADMIN.md:364`: `GET /preview` is "both (legal_page: Admin)". | `ADMIN.md:390-392`: "`legal_page` and `settings` require Admin on every content read and write, version read and preview". | An Editor's preview of settings is `403` under the prose and unspecified under the table. Do not offer it until settled. |
+| C8 (drift) | Media picker "replace" | `ADMIN.md:679-681`: lists `replace` among the media picker states, "(creates a new row)". | `CONTRACT.md` "Media" and `ADMIN.md` §7: replacing a file or correcting alt text creates a new record and repoints the reference, which is an action, not a state. | Offer `replace` on a row, not as a picker state; the picker's states are the ones in §4.7. |
 
 ### 11.3 Unspecified
 
@@ -1368,14 +1418,14 @@ defines the thing. Only C1, C3, C4 and C7 are true conflicts.
 | U4 | Phase 2 fields on service and project records | `CONTRACT.md:396-397` says the records keep service and project `slug`, a service's `long_description` and a project's `category`; neither ADMIN screen table names an editor control for `long_description` or `category`, and no limit is given. | Do not invent a control or a limit. `slug` is the only one with a create-body reference (C4). |
 | U5 | Project "image missing" state | `ADMIN.md:192` lists it, but no document defines when it applies. `CONTRACT.md:602` allows 0–3 images; open question 5 proposes 1–3. | Render the badge from the API state; do not derive it from an image count. |
 | U6 | Evidence screen | The handover brief names an evidence screen; `ADMIN.md` §3 defines no `/admin/evidence` route. Evidence is uploaded from the approval form and opened by a signed link. | Build the upload and signed-link controls inside the approval panel; do not add a library route. |
-| U7 | Structured working hours | `ADMIN.md:718` names `settings_working_hour` rows and `ADMIN.md:399-402` says the typed body includes working hours, but no document names the row's fields; `CONTRACT.md:725-728` exposes only `hours.summary` and `hours.timezone`; `DATABASE.md:1494-1496` says the rows are additive, an empty table is valid, and no gate counts them. | Build `hours_summary` and `hours_timezone`; do not build a structured hours editor until the row shape is in OpenAPI. |
+| U7 | Structured working hours | `ADMIN.md:718` names `settings_working_hour` rows and `ADMIN.md:399-402` says the typed body includes working hours, but ADMIN names no row fields; DATABASE names the columns (§12) and `CONTRACT.md:725-728` exposes only `hours.summary` and `hours.timezone`; `DATABASE.md:1494-1496` says the rows are additive, an empty table is valid, and no gate counts them. | Build `hours_summary` and `hours_timezone`; do not build a structured hours editor until the row shape is in OpenAPI. |
 | U8 | Account and MFA enrolment | `ADMIN.md:104-107` says enrolment uses the user's own Supabase session; no request or response shape is defined, and MFA recovery is A17 only. | Use the Supabase client for enrolment; do not invent FastAPI fields. |
 | U9 | Admin response field names generally | `ADMIN.md` §4 defines request bodies and says success bodies are the resource, but most response schemas are prose. Names marked † in this file are database or view columns. | Treat OpenAPI as the naming authority; this file's † marks are provisional. |
 | U10 | `legal` table columns and cells | `CONTRACT.md:663` shows three sample columns; `CONTRACT.md:695` says the editor owns purpose, duration and provider; `DATABASE.md:1191-1205` fixes only that a column has a non-empty label, and no cell length is given. | Let the editor define the column labels; do not hard-code three columns or invent a cell limit. |
 | U11 | Project `category` limit | The field is kept on the record (`CONTRACT.md:396-397`) but has no limit in the field table and no editor control. | Wait for OpenAPI; do not add a limit. It is database-only (§12). |
 | U12 | Settings identity field limits | `legal_name`, `trading_name`, `country`, the regulation 63 fields and `vat_number` have no limits in `CONTRACT.md` "Field limits" or `ADMIN.md` §9. | Do not inherit an unrelated limit; use the Pydantic schema. |
 | U13 | Multipart part names for uploads | `ADMIN.md:342` says `POST /media` takes "multipart file + `alt`"; `ADMIN.md:346` says `POST /evidence` takes "multipart file". The file part's name is not given. | Wait for OpenAPI before wiring the upload; do not assume `file`. |
-| U14 | Revalidation queue screen | `ADMIN.md` §11 names `/admin/revalidation` and `GET /revalidation`, but §3 defines no such route and the row fields (`tags`, `status`, `attempts`, `next_attempt_at`, `last_error`) are only in `DATABASE.md:1715-1734`. | Link the dashboard's failed count to the queue once the route and row schema are defined; do not build a table from the columns. |
+| U14 | Revalidation queue screen | `ADMIN.md` §11 names the screen `/admin/revalidation`, but §3 defines no such route. `GET /revalidation` is defined in §4 (`ADMIN.md:363`); the row fields (`tags`, `status`, `attempts`, `next_attempt_at`, `last_error`) are only in `DATABASE.md:1715-1734`. | Link the dashboard's failed count to the queue once the §3 screen and the row schema are defined; do not build a table from the columns. |
 | U15 | Sort allowlist | `ADMIN.md:257` requires an allowlist and names none. | OpenAPI must list the sortable fields per endpoint; until then accept only the fields an endpoint actually returns and refuse the rest with `422`. |
 | U16 | Staff removal | `PRD.md:408` and `ADMIN.md:49` give Admin "invite, change or remove users", and AD-10 names deactivation, but the endpoint inventory has no delete/remove staff row. | Do not invent a delete endpoint. Ask whether removal means `active: false` (which exists) or a new route and what happens to the person's audit rows. |
 | U17 | Invite landing and set-password | `ADMIN.md:96-98` says the person sets their own password through Supabase Auth's invite link, and the invite expires after 7 days (AD-1), but no route, screen or request shape is defined. | Use Supabase's hosted flow if that is the decision; do not build a Next route until it is. |
@@ -1424,6 +1474,7 @@ Line ranges are at `4a6b01c`; the source documents are unchanged from `3c6f46f`.
 | 3.1 `/public/page` — head, structured data | `CONTRACT.md` Head and structured data | 347-360 |
 | 3.1 `/public/page` — records, approvals, caps, preview | `CONTRACT.md` Records behind the sections, Preview | 362-464 |
 | 3.1 `/public/page` — what blocks a publish, empty sections | `CONTRACT.md` What blocks a publish | 484-512 |
+| 3.1.12 `/public/page` — legal page | `CONTRACT.md` Legal page | 638-698 |
 | 3.2 `/public/settings` | `CONTRACT.md` Site settings, Field limits; `ADMIN.md` §9 | 699-816, 1096-1142; 709-735 |
 | 3.3 `/public/routes` | `CONTRACT.md` The calls | 26-58 |
 | 3.4 `/public/enquiries` | `CONTRACT.md` Enquiry submission, Fields, After a send, The emails | 818-1002 |

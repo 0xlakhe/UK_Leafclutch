@@ -1,7 +1,7 @@
 ---
 task: 0003
 title: UI field handover — safety fixes and endpoint regroup
-status: in-progress
+status: done
 branch: handover/ui-fields
 started: 2026-11-27
 updated: 2026-11-27
@@ -80,6 +80,52 @@ so a reader looking up a call does not have to reconstruct it from screens.
 - Corrected source-line citations found while checking: success-body shape
   `ADMIN.md:253-254`, shared item chrome `ADMIN.md:214-216`.
 
+### 2026-11-27 — round 2 review
+
+The independent review of `f2f5bcc` returned no Critical and no High: four Medium and
+twelve Low findings. All are fixed in this commit. The outcome is logged here because
+`## Review` belongs to the orchestrator.
+
+- **M1** — the §2.5 mapping table presented `section_paragraph[]`,
+  `settings_address_line[]`, `settings_location[]`, `settings_location_address_line[]`
+  and `settings_footer_link[]` as admin request keys. They are database tables: each row
+  now says "rows †", and a note states that the array key is OpenAPI's (U9), as §4.3.1
+  already said.
+- **M2** — §3.1 promised "landing or legal" and documented only the landing shell. Added
+  §3.1.12 with the legal payload (`type`, `path`, `revision`, `published_at`, `seo`,
+  `title`, `updated_on`, `effective_on`, `blocks[]`), including `updated_on`, which was
+  absent from the whole document; §4.3.1 cross-refers for the derived fields.
+- **M3** — the Files changed list named `0002-ui-fields-handover.md`; corrected to
+  `0003`, matching `README.md`.
+- **M4** — `GET /approvals` was missing from §5. It is now on the `/admin/proof` row,
+  with a note that there is no `/admin/approvals` route and that `POST /auth/sign-out`
+  is a header action.
+- **L5** — three `DATABASE.md` citations corrected: `service_version.sort_order`
+  884→883, `project_version.sort_order` 970→963, `project_image` 1003-1015→995-1003.
+  A fourth in the same block, `project_technology` 990-1000→983-993, was found while
+  checking.
+- **L6** — `GET /preview?path=` became `GET /preview` with `path` in the request column,
+  in §4.12 and §5.
+- **L7** — unpublish now leaves the existing in-review version as well as a draft copy
+  (`ADMIN.md:522`), corrected in §4.4 and §8.
+- **L8** — the revoke `note` is a field row capped at `500 †` (`DATABASE.md:1548`).
+- **L9** — the media text now says ADMIN lists `replace` as a state and explains that it
+  is an action creating a new row; recorded as C8 drift in §11.2.
+- **L10** — U7 now says ADMIN names no row fields and DATABASE names the columns (§12).
+- **L11** — §4.11 and U14 separate the §3 screen route (undefined) from
+  `GET /revalidation` (defined in §4, `ADMIN.md:363`).
+- **L12** — the live privacy notice is attributed to the landing-page gate
+  (`CONTRACT.md:488`), not the contact section (`:491`).
+- **L13** — C6 and C7 are now both conflicts; C6 moved from §11.2 to §11.1.
+- **L14** — this file logged 1,447 lines and `f2f5bcc` is 1,450; corrected, and the final
+  count is 1,501.
+- **L15** — the media `role` cites `version_media` (`DATABASE.md:4026-4046`) and notes
+  that ADMIN names it only as a request filter (`ADMIN.md:343`).
+- **L16** — the approval `state` key and its values are marked provisional.
+
+Final document: 1,501 lines. Every table's pipe count was checked by script; the cited
+`DATABASE.md` line numbers were re-read. No Critical or High remains.
+
 ## Decisions made
 
 - **Mapping table, not provisional names.** H2 offered either a mapping table or marking
@@ -100,12 +146,28 @@ so a reader looking up a call does not have to reconstruct it from screens.
   an order.
 - **Work-file status left `in-progress`.** The orchestrator owns the final status and
   closure; the Review section records the review that was received.
+- **M2 is a table, not a cross-reference.** The reviewer allowed either; the table keeps
+  the legal payload in the same shape as the landing payload and puts `updated_on` in
+  front of a developer, while the edit rules stay in §4.3.1 and the block limits are not
+  copied twice in full.
+- **C6 joins C7 as a conflict (L13).** L13 requires C6 and C7 to share a classification.
+  C7 was already a conflict and the brief's mentor note keeps it in the conflict set, so
+  C6 moved up from drift/gap instead of demoting C7. The final set is C1, C3, C4, C6 and
+  C7; C2, C5 and the new C8 are drift. This makes the brief's phrase "C2/C5/C6 as
+  drift/gap" stale: L13 and that phrase cannot both hold while C6 stays in drift, and the
+  final document governs.
+- **C8 is a drift row, not a new conflict.** ADMIN's "replace" is a stale word in a state
+  list; the correct reading (a new row) is already in the same document, so it needs no
+  decision.
 
 ## Files changed
 
-- `Backend/docs/handover/ui-fields.md` — modified (stage 1, then rewritten in stage 2).
-- `Backend/docs/work/0002-ui-fields-handover.md` — new.
+- `Backend/docs/handover/ui-fields.md` — modified (stage 1, rewritten in stage 2, then
+  the round-2 fixes).
+- `Backend/docs/work/0003-ui-fields-handover.md` — new.
 - `Backend/docs/work/README.md` — index row added.
+- `Backend/docs/handover/mentor-update.md` — modified (§5 and §7 recomputed against the
+  final file).
 
 ## Migrations
 
@@ -119,15 +181,24 @@ Documentation task; no test suite applies.
   confirmed only `Backend/docs/handover/ui-fields.md` was modified before stage 1, and
   the stage 1 commit contains one file.
 - **actual run** `wc -l Backend/docs/handover/ui-fields.md` — 1117 before stage 1,
-  1447 after stage 2.
+  1447 at the stage-2 checkpoint, **1450 at `f2f5bcc`** (the earlier log's 1,447 was
+  three lines short), 1501 after the round-2 fixes; `mentor-update.md` is 164 lines.
 - **actual run** `grep -n` for the named fields and drift terms — checked `limits.py`,
   `long_description`, `category`, `working_hours`, `client_name`, `not_found` and
   `replace`; all remaining hits are scoped citations or the database-only table.
 - **actual run** source-line checks with `awk`/`sed` against `ADMIN.md`, `CONTRACT.md`
   and `DATABASE.md` — corrected two admin line ranges (see Work log).
+- **actual run** a Python table check over `ui-fields.md` — every contiguous table has a
+  consistent pipe count; no malformed row after the new §3.1.12 and §4.6 rows.
+- **actual run** `git status --short` before the commit — only `ui-fields.md`,
+  `mentor-update.md` and this work file are modified; `DATABASE.md` was restored to HEAD
+  after an external process rewrote it (see Not verified).
+- **actual run** a Python count of the field tables — 298 rows: 150 public (86 landing,
+  17 legal, 35 settings, 5 routes, 7 enquiry) and 148 admin; §12's 15 database-only rows
+  and §7's 45 limit rows are excluded. The mentor note quotes these numbers.
 - **not run** `uv run pytest`, lint and typecheck — no Python or frontend code changed;
-  the repository has no documentation linter. The orchestrator's definition of done
-  still requires the reviewer; see Remaining.
+  the repository has no documentation linter. The independent review has since been
+  dispatched and its outcome is in the Work log.
 
 ## Review
 
@@ -148,26 +219,38 @@ commit, so they survive the rewrite.
 
 ### Round 2 — the endpoint restructure (this commit)
 
-Applied the M1–M9 and Low findings from the same review. No independent review of the
-restructured file has been run yet; the orchestrator dispatches the reviewer after this
-commit. **Not run.**
+The restructured file was reviewed independently at `f2f5bcc`. It found no Critical and
+no High: the five High findings were confirmed closed, all 48 admin endpoints matched
+`ADMIN.md` §4 one-for-one, and a 30-field sample traced to its sources. It raised four
+Medium and twelve Low findings.
+
+All were fixed before the final commit: the mapping table's unmarked table names, the
+missing legal-page payload, the work-file path, the unplaced approvals list, three wrong
+`DATABASE.md` citations, the preview path notation, the in-review unpublish case, the
+revoke 500 cap, `replace` as a drift item, the U7/U14 wording, the contact gate, the
+C6/C7 classification, the line count, the `role` citation and the provisional approval
+state.
+
+Outcome: **accepted**. No open Critical or High. C1, C3, C4, C6 and C7 stay open as
+source conflicts; §11 gives each a workaround that does not block slice 1.
 
 ## Docs updated
 
-`Backend/docs/handover/ui-fields.md` only. `ADMIN.md`, `CONTRACT.md`, `DATABASE.md`,
-the OpenAPI schema and the ADRs are unchanged, because this task resolves no source
-conflict and adds no endpoint.
+`Backend/docs/handover/ui-fields.md` and `Backend/docs/handover/mentor-update.md`, plus
+this work file. `ADMIN.md`, `CONTRACT.md`, `DATABASE.md`, the OpenAPI schema and the ADRs
+are unchanged, because this task resolves no source conflict and adds no endpoint.
 
 ## Remaining
 
-- Independent review of the restructured file, and a decision on C1, C3, C4 and C7.
-- The orchestrator owns the work-file status and `Next`.
+None for this document. C1, C3, C4, C6 and C7 remain source conflicts to reconcile at
+M14 (payloads) and M16 (admin); each has a buildable workaround in §11 and none blocks
+slice 1.
 
 ## Next
 
-Dispatch the reviewer with this file, the diff `4a6b01c..HEAD` and the cited source
-sections. Then decide C1 (phone-hours shape), C3 (40/160 vs 80/200), C4 (create
-optionality) and C7 (sign-in route) before any frontend build starts.
+Hand `ui-fields.md` and `mentor-update.md` to the frontend team. When M14 generates
+OpenAPI, reconcile the provisional `†` names and U-items against it, and settle
+C1/C3/C4/C6/C7 in the source documents at M16.
 
 ## Open questions
 
@@ -176,13 +259,20 @@ optionality) and C7 (sign-in route) before any frontend build starts.
   `settings_location.phone_hours`.
 - C3: which pair wins, 80/200 or 40/160?
 - C4: are `path` and `slug` optional on create for every kind?
+- C6: does an Editor preview settings (`ADMIN.md:364` table) or is it Admin only
+  (`ADMIN.md:390-392` prose)?
 - C7: one `/admin/audit` screen or a separate `/admin/sign-ins`?
 - U15–U17: sort allowlist, staff removal, invite landing/set-password.
 
 ## Not verified
 
-- No independent review of the restructured document.
+- The final review was independent and read the whole document at `f2f5bcc`; the fixes
+  applied after it were checked by the orchestrator against the findings, not re-reviewed
+  line by line.
 - No line-by-line rendering check in a Markdown viewer; table pipe counts were checked by
   script, not by eye in the target CMS/editor.
 - The FastAPI service and its generated OpenAPI schema do not exist, so no field name
   could be validated against a live contract.
+- During the session an external process rewrote `Backend/docs/DATABASE.md` (table
+  padding and a `contact_nphone` typo). It was restored with `git checkout --` and is not
+  in this commit; the cause was not identified.

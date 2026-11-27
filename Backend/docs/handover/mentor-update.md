@@ -65,13 +65,18 @@ and settings, M16's delete endpoint and M17's evidence isolation into the plan
 
 ## 5. Frontend handover
 
-`docs/handover/ui-fields.md` (`4a6b01c`, written against `3c6f46f`) is the build sheet for
-the landing page and `/admin`: 294 field rows — 90 landing, 204 admin, excluding §3.27's 14
-database-only rows — wire names with † for provisional database columns, and a source map
-(§9). It records 7 source conflicts (C1–C7) and 14 unspecified items (U1–U14) rather than
-choosing, and §6 lists what not to build. It is a design contract, not a live API; OpenAPI
-becomes authoritative when it exists (U9). A later revision (`708368a`) adds admin
-request-field rows and corrections; the counts above are for `4a6b01c`.
+`docs/handover/ui-fields.md` (the current revision — `f2f5bcc` plus the review fixes,
+sources unchanged from `3c6f46f`) is the build sheet for the landing page and `/admin`,
+regrouped by the call the frontend makes: four public endpoints, then the 48 admin
+endpoints of `ADMIN.md` §4, then a screen index, build order, limits, shared behaviour,
+do-not-build, open decisions, conflicts and a source map (§13). It names 298 field rows —
+150 public (86 landing sections, 17 legal page, 35 settings, 5 routes, 7 enquiry form) and
+148 admin (typed bodies, approvals, media, enquiries, staff, audit and preview), excluding
+§12's 15 database-only rows — with † for a provisional database column. It records five
+conflicts (C1, C3, C4, C6, C7), three drift or gap items (C2, C5, C8) and 17 unspecified
+items (U1–U17) rather than choosing; §9 lists what not to build. It is a design contract,
+not a live API; OpenAPI becomes authoritative when it exists (U9). The task file is
+`docs/work/0003-ui-fields-handover.md`.
 
 ## 6. Decisions taken and deferred
 
@@ -85,17 +90,20 @@ request-field rows and corrections; the counts above are for `4a6b01c`.
 
 ## 7. Risks and open questions
 
-The two conflicts that block UI work now:
+`ui-fields.md` §11 records five source conflicts. Each has a buildable workaround or a
+clear wait in that section; none blocks slice 1 of the build order:
 
 | # | Conflict | Effect |
 | --- | --- | --- |
-| C1 | `contact.phone_hours`: the contract has `hours` as `{summary, timezone}` with the 120-character limit on `phone_hours.summary`; `ADMIN.md` and `DATABASE.md` have `contact_phone_hours` as a text column | No phone-hours control can be built until the shape is settled. |
-| C2 | `locations[].phone_hours`: the prose says an object with the same shape as `contact.hours`; the sample shows a scalar `null`; no limit is given | A location form cannot choose between a text field and summary plus timezone. |
+| C1 | `contact.phone_hours`: the contract has `hours` as `{summary, timezone}` with the 120-character limit on `phone_hours.summary`; `ADMIN.md` and `DATABASE.md` have `contact_phone_hours` as a text column | One 120-character text input bound to `contact_phone_hours`; no timezone picker; OpenAPI settles the object-versus-text shape. |
+| C3 | `next_steps`, 80/200 in the contract against 40/160 in the database | Fails at the database boundary. |
+| C4 | `slug`/`path` optionality on create | The create form cannot know which field is required. |
+| C6 | An Editor previewing settings: §4's preview table says both roles, §4's prose says Admin | Do not offer it until the API picks one. |
+| C7 | The sign-in log route: one `/admin/audit` screen or a separate `/admin/sign-ins` | No separate navigation entry until confirmed. |
 
-C3 (`next_steps`, 80/200 in the contract against 40/160 in the database) fails at the
-database boundary; C4 (`slug`/`path` optionality), C5 (M8 still open in `ADMIN.md` §14), C6
-(an Editor previewing settings) and C7 (the sign-in log route) wait on the same
-reconciliation.
+C2 (the location half of C1), C5 (M8 still open in `ADMIN.md` §14) and C8 (ADMIN lists
+`replace` among the media picker states) are recorded as drift or gaps, not as decisions
+that block a control. The 17 unspecified items are U1–U17 in §11.3.
 
 Only `GET /health` is implemented, so the OpenAPI schema the frontend and admin are told to
 treat as authoritative does not exist; admin response names stay provisional until M16,
