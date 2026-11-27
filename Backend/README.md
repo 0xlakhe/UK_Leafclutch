@@ -75,9 +75,9 @@ in `DATABASE_URL` to match. The container always listens on 5432 internally.
 
 Before the first migration, a fresh local database needs the minimal `auth` schema.
 Supabase owns that schema in production; `scripts/bootstrap_local.sql` creates
-`auth.users (id uuid primary key)` and is idempotent, so it is a no-op against Supabase. It
-is a local harness step, not a migration: `staff.user_id` references `auth.users`, and a
-plain PostgreSQL container has no `auth` schema.
+`auth.users (id, email, last_sign_in_at)` and is idempotent, so it is a no-op against
+Supabase. It is a local harness step, not a migration: `staff.user_id` references
+`auth.users`, and a plain PostgreSQL container has no `auth` schema.
 
 ```bash
 docker compose exec -T db psql -U leafclutch -d leafclutch -v ON_ERROR_STOP=1 \
@@ -101,9 +101,27 @@ uv run alembic upgrade head
 uv run alembic check
 ```
 
-`alembic check` compares `app/models.py` with the migrated database and must report no new
-upgrade operations. The `auth` schema is excluded from autogenerate because Supabase owns
-it; the local `auth.users` stub is never part of a revision.
+`alembic check` compares `app/models.py` with the migrated database, including server
+defaults, and must report no new upgrade operations. The `auth` schema is excluded from
+autogenerate because Supabase owns it; the local `auth.users` stub is never part of a
+revision.
+
+`alembic downgrade base` drops the tables and enum types but leaves `pgcrypto` and `citext`
+in place. Extensions are shared database objects that may predate this schema or belong to
+another one, so the downgrade never removes them; the upgrade's `create extension if not
+exists` re-applies them safely. Treat the downgrade as a development command.
+
+Every revision change must pass the round trip on the disposable test database before it is
+committed; it drops every table there:
+
+```bash
+DATABASE_URL="postgresql+psycopg://leafclutch:leafclutch@127.0.0.1:5434/leafclutch_test" \
+  uv run alembic downgrade base
+DATABASE_URL="postgresql+psycopg://leafclutch:leafclutch@127.0.0.1:5434/leafclutch_test" \
+  uv run alembic upgrade head
+```
+
+Replace 5434 with your `POSTGRES_PORT` when the Compose host port differs.
 
 The init scripts only run when the volume is first created. To rebuild a broken local
 database from scratch, `docker compose down -v` and start it again; this deletes all local

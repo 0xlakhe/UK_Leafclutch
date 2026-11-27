@@ -42,6 +42,11 @@ as $$
 declare
   remaining integer;
 begin
+  -- Serialise this invariant across transactions. Without the lock, two deletes of
+  -- different active Admins both count the other one and both commit, leaving no Admin.
+  -- The key is constant for this trigger alone and the lock is released at transaction end.
+  perform pg_advisory_xact_lock(hashtext('staff_last_admin'));
+
   if tg_op = 'DELETE' then
     if old.role = 'admin' and old.active then
       select count(*) into remaining

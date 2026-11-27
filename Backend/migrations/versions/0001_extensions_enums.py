@@ -89,8 +89,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # Drop in reverse creation order. Dropping the extensions is a development-only
-    # rollback: Supabase creates them itself, and other schemas may depend on them.
+    # Drop the enum types only. Extensions are shared database objects: they may predate
+    # this revision or be used by another schema, so removing them on downgrade would fail
+    # or break that schema. The upgrade's "if not exists" makes re-applying them safe.
     op.execute("drop type revalidation_status")
     op.execute("drop type email_status")
     op.execute("drop type email_kind")
@@ -104,5 +105,3 @@ def downgrade() -> None:
     op.execute("drop type page_section_key")
     op.execute("drop type content_kind")
     op.execute("drop type staff_role")
-    op.execute("drop extension if exists citext")
-    op.execute("drop extension if exists pgcrypto")
