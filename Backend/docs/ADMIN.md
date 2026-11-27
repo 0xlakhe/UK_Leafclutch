@@ -200,6 +200,7 @@ badges ("awaiting approval", "approval missing", "expired", "revoked") come from
 | `/admin/settings` | Site frame and legal identity | Admin | draft, live, incomplete identity, blocked |
 | `/admin/staff` | Staff list, invite, role, active, MFA state | Admin | invited, active, inactive, last Admin |
 | `/admin/audit` | Audit log and sign-in log | Admin | loading, filtered, empty |
+| `/admin/revalidation` | Revalidation queue: pending, failed, dead | Admin | loading, empty, filtered, failed |
 | `/admin/account` | Own MFA, password, session | Admin, Editor | enrolled, not enrolled, reset |
 | `/admin/sign-in` | Supabase sign-in | signed out | credentials, MFA challenge, error, locked |
 | `/preview<path>` | Renders a draft through FastAPI (Next catch-all) | Admin, Editor (settings: Admin) | draft, blocked fields, staged media |
