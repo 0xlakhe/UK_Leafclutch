@@ -11,7 +11,9 @@ commit if it forgets the row; it fires on a kind change too, so an item cannot b
 has versions. `assert_page_section_item_kept` holds the same invariant from the other side:
 a deferred check on `page_section` deletes. `assert_page_section_position` freezes the
 row's identity and order. `assert_section_version_key` makes a version's key match its
-`page_section` row and never change. `assert_section_child` keeps each list on the section
+`page_section` row and never change. `prevent_version_item_move` freezes a version's item
+for every status, so a typed row cannot reach another item by moving its version.
+`assert_section_child` keeps each list on the section
 key that owns it, and `assert_section_version_item` keeps a reference on the record kind
 its section renders. The seven immutability triggers reuse
 `prevent_published_content_mutation` from 0004; the function is not recreated here.
@@ -217,6 +219,26 @@ SECTION_VERSION_IMMUTABLE_TRIGGER_SQL = """
 create trigger section_version_immutable
   before insert or update or delete on section_version
   for each row execute function prevent_published_content_mutation();
+"""
+
+PREVENT_VERSION_ITEM_MOVE_SQL = """
+create or replace function prevent_version_item_move()
+returns trigger
+language plpgsql
+as $$
+begin
+  if new.item_id <> old.item_id then
+    raise exception 'a version cannot move between items';
+  end if;
+  return new;
+end;
+$$;
+"""
+
+CONTENT_VERSION_ITEM_FROZEN_TRIGGER_SQL = """
+create trigger content_version_item_frozen
+  before update of item_id on content_version
+  for each row execute function prevent_version_item_move();
 """
 
 ASSERT_SECTION_CHILD_SQL = """
@@ -640,6 +662,8 @@ def upgrade() -> None:
     op.execute(PAGE_SECTION_IMMUTABLE_TRIGGER_SQL)
     op.execute(ASSERT_SECTION_VERSION_KEY_SQL)
     op.execute(SECTION_VERSION_KEY_GUARD_TRIGGER_SQL)
+    op.execute(PREVENT_VERSION_ITEM_MOVE_SQL)
+    op.execute(CONTENT_VERSION_ITEM_FROZEN_TRIGGER_SQL)
     op.execute(SECTION_VERSION_IMMUTABLE_TRIGGER_SQL)
     op.execute(ASSERT_SECTION_CHILD_SQL)
     op.execute(SECTION_CHILD_TRIGGERS_SQL)
@@ -653,6 +677,8 @@ def downgrade() -> None:
     # its trigger and before the table it reads; `prevent_published_content_mutation`
     # belongs to 0004 and stays. The child guards go before their functions, and the
     # children before `section_version`, which they read.
+    op.execute("drop trigger content_version_item_frozen on content_version")
+    op.execute("drop function prevent_version_item_move()")
     op.execute("drop trigger page_section_row_kept on page_section")
     op.execute("drop trigger page_section_immutable on page_section")
     op.execute("drop trigger section_version_key_guard on section_version")

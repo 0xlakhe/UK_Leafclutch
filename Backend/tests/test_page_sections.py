@@ -49,6 +49,7 @@ PAGE_SECTION_LOST = "page section item .* lost its page_section row"
 PAGE_SECTION_CHANGED = "page section item .* changed its page_section row"
 PAGE_SECTION_POSITION = "page_section identity and position cannot change"
 SECTION_VERSION_KEY_MOVED = "section version key cannot change"
+VERSION_MOVE = "a version cannot move between items"
 SECTION_VERSION_WRONG_ITEM = "section version belongs to a page section"
 SECTION_VERSION_KEY_MISMATCH = "section version key .* does not match its section .*"
 SECTION_ITEM_WITH_VERSIONS = "a section item with versions cannot change kind"
@@ -395,6 +396,16 @@ EXPECTED_TRIGGERS: dict[str, tuple[str, bool, bool, bool, bool, bool, bool, bool
         True,
         True,
         True,
+    ),
+    "content_version_item_frozen": (
+        "content_version",
+        True,
+        True,
+        False,
+        False,
+        True,
+        False,
+        False,
     ),
     "faq_item_immutable": (
         "faq_item",
@@ -1380,6 +1391,53 @@ def test_a_section_version_key_cannot_change(db: Connection) -> None:
     assert select_section_version(db, version_id).section_key == "hero"
 
 
+def test_a_version_cannot_move_to_another_item(db: Connection) -> None:
+    editor = add_staff(db)
+    version_id = add_section_version(db, editor, "about")
+    project_id = add_item(db, editor, kind="project", slug=f"project-{uuid.uuid4()}")
+
+    with pytest.raises(DBAPIError, match=VERSION_MOVE):
+        with db.begin_nested():
+            db.execute(
+                sa.update(content_version)
+                .where(content_version.c.id == version_id)
+                .values(item_id=project_id)
+            )
+
+
+def test_a_refused_version_move_leaves_the_section_version_with_its_item(
+    db: Connection,
+) -> None:
+    editor = add_staff(db)
+    version_id = add_section_version(db, editor, "about")
+    project_id = add_item(db, editor, kind="project", slug=f"project-{uuid.uuid4()}")
+
+    with pytest.raises(DBAPIError, match=VERSION_MOVE):
+        with db.begin_nested():
+            db.execute(
+                sa.update(content_version)
+                .where(content_version.c.id == version_id)
+                .values(item_id=project_id)
+            )
+
+    owner = db.execute(
+        sa.select(content_version.c.item_id).where(content_version.c.id == version_id)
+    ).scalar_one()
+    assert owner != project_id
+    assert count_rows(db, page_section, page_section.c.item_id == owner) == 1
+    assert select_section_version(db, version_id).section_key == "about"
+
+    db.execute(
+        sa.insert(section_paragraph).values(
+            version_id=version_id, sort_order=0, text="Still about."
+        )
+    )
+    assert (
+        count_rows(db, section_paragraph, section_paragraph.c.version_id == version_id)
+        == 1
+    )
+
+
 def test_a_section_item_with_versions_cannot_change_kind(db: Connection) -> None:
     editor = add_staff(db)
     _, item_id = add_section(db, editor, "hero")
@@ -1883,8 +1941,9 @@ def test_the_installed_triggers_fire_on_the_documented_events(db: Connection) ->
             sa.text(
                 "select tgname, tgrelid::regclass::text, tgtype, tgdeferrable, "
                 "tginitdeferred from pg_trigger where not tgisinternal and tgname in "
-                "('content_item_page_section_row', 'section_version_immutable', "
-                "'section_paragraph_section', 'process_stage_section', "
+                "('content_item_page_section_row', 'content_version_item_frozen', "
+                "'section_version_immutable', 'section_paragraph_section', "
+                "'process_stage_section', "
                 "'process_assurance_section', 'faq_item_section', "
                 "'contact_next_step_section', 'section_version_item_assert', "
                 "'section_paragraph_immutable', 'process_stage_immutable', "
@@ -1910,8 +1969,9 @@ def test_the_column_scoped_triggers_watch_the_documented_columns(db: Connection)
                 "where a.attrelid = t.tgrelid "
                 "and a.attnum = any (t.tgattr::int2[])), '') "
                 "from pg_trigger t where not t.tgisinternal and t.tgname in "
-                "('content_item_page_section_row', 'section_version_immutable', "
-                "'section_paragraph_section', 'process_stage_section', "
+                "('content_item_page_section_row', 'content_version_item_frozen', "
+                "'section_version_immutable', 'section_paragraph_section', "
+                "'process_stage_section', "
                 "'process_assurance_section', 'faq_item_section', "
                 "'contact_next_step_section', 'section_version_item_assert', "
                 "'section_paragraph_immutable', 'process_stage_immutable', "
@@ -1926,6 +1986,7 @@ def test_the_column_scoped_triggers_watch_the_documented_columns(db: Connection)
     assert watched == {
         name: {
             "content_item_page_section_row": "kind",
+            "content_version_item_frozen": "item_id",
             "section_version_key_guard": "section_key",
         }.get(name, "")
         for name in EXPECTED_TRIGGERS
@@ -2016,6 +2077,14 @@ def test_the_installed_assert_page_section_row_pins_its_message(db: Connection) 
             ],
         ),
         (
+            "prevent_version_item_move()",
+            [
+                "if new.item_id <> old.item_id then",
+                "raise exception 'a version cannot move between items'",
+                "return new",
+            ],
+        ),
+        (
             "assert_section_version_item()",
             [
                 "v_version := case when tg_op = 'delete' then old.version_id else "
@@ -2044,6 +2113,7 @@ def test_the_installed_assert_page_section_row_pins_its_message(db: Connection) 
         "assert_page_section_item_kept",
         "assert_page_section_position",
         "assert_section_version_key",
+        "prevent_version_item_move",
         "assert_section_version_item",
     ],
 )

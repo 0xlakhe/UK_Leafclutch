@@ -251,6 +251,14 @@ EXPECTED_TRIGGERS: dict[str, tuple[str, bool, bool, bool, bool, bool]] = {
         True,
         True,
     ),
+    "content_version_item_frozen": (
+        "content_version",
+        True,
+        True,
+        False,
+        False,
+        True,
+    ),
     "content_version_set_updated_at": (
         "content_version",
         True,

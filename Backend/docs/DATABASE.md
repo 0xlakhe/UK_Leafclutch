@@ -2195,12 +2195,30 @@ $$;
 create trigger content_version_immutable
   before update or delete on content_version
   for each row execute function prevent_published_version_mutation();
+
+create or replace function prevent_version_item_move()
+returns trigger
+language plpgsql
+as $$
+begin
+  if new.item_id <> old.item_id then
+    raise exception 'a version cannot move between items';
+  end if;
+  return new;
+end;
+$$;
+
+create trigger content_version_item_frozen
+  before update of item_id on content_version
+  for each row execute function prevent_version_item_move();
 ```
 
 The publish update itself is allowed: it changes a draft or in-review row to
 published. Any later update or delete sees `old.status = 'published'` and fails; the
 delete branch returns `old`, so a draft version can still be deleted and a published
 version cannot. This also refuses an item cascade that would remove a published version.
+A version belongs to the item that created it, so `content_version_item_frozen` freezes
+`item_id` for every status; a typed row cannot reach another item by moving its version.
 
 ```sql
 create or replace function assert_publication_version()

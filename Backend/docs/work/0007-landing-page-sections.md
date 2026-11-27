@@ -275,6 +275,28 @@ afterwards):
    failed with `page section item <id> needs a page_section row`; the restored function
    passed, and the whole file passed on the scratch database (`109 passed`).
 
+### 2026-11-27 — recheck, second half: a version keeps its item
+
+Fixed the second half of the recheck findings in the same revision, still unpushed
+(`f8d74c1` is the last commit). `content_version.item_id` is now frozen for every status:
+`prevent_version_item_move()` and `content_version_item_frozen` (`before update of item_id
+on content_version`) raise `a version cannot move between items`. A draft version can no
+longer move from its `page_section` item to a project, so the reviewer's sequence cannot
+reach the paragraph insert, and the §Section copy claim that a version may exist only for a
+`page_section` item now holds for drafts too. The guard is a new object in the unpushed
+`0005` revision, not an edit to the pushed `0004`; the downgrade drops the trigger and the
+function.
+
+The tests add the refused move and the reviewer's sequence (the version still belongs to
+the page-section item, its key is unchanged, and a paragraph inserts on it).
+`test_content_spine.py`'s trigger inventory gains `content_version_item_frozen`; the
+page-sections catalogue also pins its event bits, its `item_id` column and its body.
+
+Mutation proof on `leafclutch_scratch_test` (created from `leafclutch_test`, dropped
+afterwards): dropping `content_version_item_frozen` made the move test fail with `Failed:
+DID NOT RAISE DBAPIError` (`test_page_sections.py:1399`); recreating it made both new tests
+pass.
+
 ## Decisions made
 
 - The deferred trigger's `tgdeferrable`/`tginitdeferred` flags and its function body are
@@ -353,6 +375,12 @@ afterwards):
   `Backend/tests/test_page_sections.py` gains the changed-reinsert and create-and-delete
   cases, changes the sections-then-page test and updates the two body pins.
 - Recheck: `Backend/docs/work/0007-landing-page-sections.md` — this update.
+- Recheck, second half: `Backend/migrations/versions/0005_page_sections.py` gains
+  `prevent_version_item_move()` and `content_version_item_frozen`, and its downgrade drops
+  them; `Backend/docs/DATABASE.md` §Publication and immutability documents them;
+  `Backend/tests/test_page_sections.py` gains the move tests and the catalogue pins;
+  `Backend/tests/test_content_spine.py` gains the trigger inventory entry.
+- Recheck, second half: `Backend/docs/work/0007-landing-page-sections.md` — this update.
 
 ## Migrations
 
@@ -387,6 +415,9 @@ afterwards):
   current state, and `assert_page_section_item_kept` compares the replacement row's
   `page_id`, `section_key` and `sort_order`. The triggers, tables and downgrade are
   unchanged. The round trip was re-run with the same result.
+- The recheck's second half adds `prevent_version_item_move()` and
+  `content_version_item_frozen` (`before update of item_id on content_version`); the
+  downgrade drops both before the tables. The round trip was re-run with the same result.
 
 ## Tests
 
@@ -540,6 +571,32 @@ after restoring the old `new.kind` check in `assert_page_section_row()`; the res
 function passed and the whole file passed on the scratch database (`109 passed`). The
 scratch database was dropped.
 
+The recheck's second half, run from `Backend/` on 2026-11-27 against PostgreSQL 18 in
+Docker (port 5434):
+
+| Command | Result |
+| --- | --- |
+| `uv run ruff check .` | `All checks passed!` |
+| `uv run mypy app` | `Success: no issues found in 6 source files` |
+| `uv run pytest -q` | `322 passed, 4 warnings in 1.50s` |
+| `uv run pytest -q --import-mode=importlib` | `322 passed, 4 warnings in 1.40s` |
+| `uv run alembic check` | `No new upgrade operations detected.` |
+| `uv run alembic downgrade base` | all five revisions downgraded |
+| `uv run alembic upgrade head` | all five revisions upgraded |
+| `uv run alembic current` | `0005_page_sections (head)` |
+
+Mutation proof: dropping `content_version_item_frozen` on `leafclutch_scratch_test` made
+the move test fail:
+
+```
+E   Failed: DID NOT RAISE DBAPIError
+tests/test_page_sections.py:1399: Failed: DID NOT RAISE DBAPIError
+1 failed, 1 warning in 0.18s
+```
+
+Recreating the trigger made both new tests pass (`2 passed`). The scratch database was
+dropped.
+
 ## Review
 
 ## Docs updated
@@ -560,6 +617,9 @@ scratch database was dropped.
   `section_version_key_guard` and the key rule; the Migrations table row for
   `0005_page_sections` names the five child tables and the guards. `CONTRACT.md`,
   `ADMIN.md` and OpenAPI still do not move: no endpoint is exposed.
+- The recheck rounds leave that documentation current: §Section items describes the
+  identity and current-state checks, and §Publication and immutability gains
+  `prevent_version_item_move` and `content_version_item_frozen`.
 
 ## Remaining
 
@@ -569,6 +629,8 @@ scratch database was dropped.
   mutation proofs cover each branch.
 - The first half of the recheck findings is fixed in this commit; nothing else is open for
   that half. The independent re-review and the orchestrator's decision are the next gate.
+- The second half is fixed too: `content_version_item_frozen` closes the draft-version
+  move. No code, test or migration work is open for task 0007.
 
 ## Next
 
