@@ -48,13 +48,15 @@ database.
 Start the local PostgreSQL 16 service and wait for it to become healthy:
 
 ```bash
-docker compose up -d db
+docker compose up -d --wait db
 docker compose ps
 ```
 
 The container creates the `leafclutch` database and, on first initialisation, the
-`leafclutch_test` database used by the test suite. Both use the local-only
-`leafclutch`/`leafclutch` credentials from `compose.yaml`.
+`leafclutch_test` database used by the test suite. It publishes the database on the
+loopback interface only (`127.0.0.1`) and uses the throwaway `leafclutch`/`leafclutch`
+credentials from `compose.yaml`; these are for local development and must not be reused
+anywhere else.
 
 The Compose host port is configurable. `POSTGRES_PORT` defaults to 5432; when that port is
 already in use, set it in `.env` to a free port (5434 in this checkout) and change the port

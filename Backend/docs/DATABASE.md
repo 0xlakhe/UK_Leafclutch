@@ -4779,9 +4779,9 @@ does not imply full PRD coverage for them and no tables are added for them:
 
 ## Open questions
 
-1. **Data layer confirmation.** SQLAlchemy 2.0 sync + Alembic + psycopg 3 is the
-   proposal. The alternative is async SQLAlchemy with asyncpg; it changes the FastAPI
-   endpoint style, not the schema. Confirm before scaffolding.
+1. **Data layer confirmation.** Confirmed in task 0001: SQLAlchemy 2.0 sync + Alembic +
+   psycopg 3 on Python 3.12. Async SQLAlchemy with asyncpg was rejected because it changes
+   the FastAPI endpoint style and session lifetime without changing the schema.
 2. **`auth.users` in CI.** The FK is right for Supabase. The test harness must create
    a minimal `auth.users` or run Supabase local; a plain Postgres container does not
    have the schema.

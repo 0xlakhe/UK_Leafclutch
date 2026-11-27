@@ -1,3 +1,6 @@
+from unittest.mock import Mock
+
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine
 from sqlalchemy.orm import sessionmaker
@@ -15,6 +18,16 @@ def test_lifespan_stores_the_engine_and_session_factory() -> None:
     with TestClient(app):
         assert isinstance(app.state.engine, Engine)
         assert isinstance(app.state.session_factory, sessionmaker)
+
+
+def test_lifespan_disposes_the_engine(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine = Mock()
+    monkeypatch.setattr("app.main.build_engine", lambda settings: engine)
+
+    with TestClient(app):
+        pass
+
+    engine.dispose.assert_called_once_with()
 
 
 def test_build_engine_uses_the_configured_url() -> None:

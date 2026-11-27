@@ -24,13 +24,11 @@ def test_unknown_environment_is_rejected(monkeypatch: pytest.MonkeyPatch) -> Non
 def test_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DATABASE_URL", DATABASE_URL)
     monkeypatch.delenv("ENVIRONMENT", raising=False)
-    monkeypatch.delenv("LOG_LEVEL", raising=False)
 
     settings = Settings(_env_file=None)
 
     assert settings.database_url == DATABASE_URL
     assert settings.environment == "development"
-    assert settings.log_level == "info"
 
 
 def test_get_settings_is_cached() -> None:

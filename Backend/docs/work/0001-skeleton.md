@@ -70,6 +70,18 @@ pydantic-settings.
   network and volume), and started the new project. `docker compose up -d --wait db`
   reached `Healthy`; `uv run alembic current` exits 0; `psql -lqt` lists `leafclutch` and
   `leafclutch_test`; `GET /health` returns 200.
+- **2026-11-27 — Review fixes (M1–M3, L4–L10).** Bound Compose to `127.0.0.1`, moved the
+  healthcheck to the TCP listener, and recreated the container. The test bootstrap now
+  derives `POSTGRES_PORT` (default 5432), uses `setdefault` so a caller-supplied
+  `DATABASE_URL` wins, and imports `app.config` after the environment is populated.
+  Removed the unused `log_level` setting and the framework-only 404 test, corrected the
+  README wording and command, added conftest and engine-disposal tests, and confirmed the
+  data layer in `DATABASE.md`. 14 tests pass. (`## Plan` step 2 still mentions a log-level
+  literal; it is superseded by L8 and left unchanged because `Plan` is orchestrator-owned.)
+- **2026-11-27 — Evidence correction (L10).** The first-iteration `## Tests` block, which
+  held the failed Compose output, was replaced by the successful block in commit 79d68f3.
+  The failure summary remains in the "Checks" entry above; the deleted output is not
+  reproduced. The review-fix block in `## Tests` supersedes the 79d68f3 output in turn.
 
 ## Decisions made
 
@@ -98,6 +110,17 @@ pydantic-settings.
   uses 5434. `DATABASE_URL` must use the same port; `.env.example` keeps 5432 and
   documents the pairing, while the local `.env` holds the 5434 override and is never
   committed.
+- Compose publishes PostgreSQL on the loopback interface only
+  (`127.0.0.1:${POSTGRES_PORT:-5432}:5432`). The credentials are a fixed local throwaway
+  in the repository, so binding every interface would expose a known-password database to
+  the local network; the password stays a Compose-local default, not a deployed secret.
+- The test bootstrap derives the URL port from `POSTGRES_PORT` (default 5432) and uses
+  `os.environ.setdefault`, so a CI-supplied `DATABASE_URL` wins. `app.config` is imported
+  only after the environment is populated. M1 tests still open no connection.
+- `log_level` is removed from `Settings` and `.env.example`: nothing consumed it. Logging
+  configuration arrives with M20, when there is a real consumer. `environment` stays.
+- `test_unknown_route_returns_404` is deleted: it asserts Starlette's routing, not this
+  application, and would pass for any FastAPI app.
 
 ## Files changed
 
@@ -136,6 +159,20 @@ Follow-up (Compose port fix):
 - `Backend/docs/work/0001-skeleton.md` — this record
 - `Backend/.env` — created locally for the 5434 override, git-ignored, not committed
 
+Review fixes:
+
+- `Backend/compose.yaml` — loopback-only publish; loopback healthcheck
+- `Backend/.env.example` — removed `LOG_LEVEL`
+- `Backend/README.md` — loopback/throwaway wording; `docker compose up -d --wait db`
+- `Backend/app/config.py` — removed the unused `log_level`
+- `Backend/tests/conftest.py` — `POSTGRES_PORT` derivation, `setdefault`, import order
+- `Backend/tests/test_conftest.py` — new external-URL and port tests
+- `Backend/tests/test_config.py` — dropped the `log_level` default assertion
+- `Backend/tests/test_health.py` — dropped the framework-only 404 test
+- `Backend/tests/test_db.py` — added the engine-disposal test
+- `Backend/docs/DATABASE.md` — open question 1 records the confirmed data layer
+- `Backend/docs/work/0001-skeleton.md` — this record
+
 `Backend/.gitignore` already contained the Python ignores and was left as it was.
 
 ## Migrations
@@ -146,11 +183,11 @@ exists and no table is created; `Base.metadata` stays empty until M2.
 
 ## Tests
 
-```
-$ uv sync
-Resolved 44 packages in 9ms
-Checked 41 packages in 8ms
+The block below is an **actual run** from the review-fix round. The 12-test block from
+commit 79d68f3 is **superseded**; the first-iteration failure output was removed by that
+commit and its summary remains in the "Checks" work-log entry.
 
+```
 $ uv run ruff check .
 All checks passed!
 
@@ -158,10 +195,11 @@ $ uv run mypy app
 Success: no issues found in 5 source files
 
 $ uv run pytest
-tests/test_config.py .....                                               [ 41%]
-tests/test_db.py ....                                                    [ 75%]
-tests/test_health.py ...                                                 [100%]
-======================== 12 passed, 1 warning in 0.25s =========================
+tests/test_config.py .....                                               [ 35%]
+tests/test_conftest.py ..                                                [ 50%]
+tests/test_db.py .....                                                   [ 85%]
+tests/test_health.py ..                                                  [100%]
+======================== 14 passed, 1 warning in 0.24s =========================
 ```
 
 The warning is the known one:
@@ -171,26 +209,37 @@ The warning is the known one:
 Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
 ```
 
-Recorded, not chased, per the brief.
+Recorded, not chased.
 
-Coverage: health 200 and payload; unknown route 404; health still 200 with a deliberately
-unreachable database URL (proves liveness does not touch the database); required
-`DATABASE_URL`; unknown environment rejected; defaults; cached settings; settings read
-from the environment; engine URL; session factory binding; `get_session` using the
-factory on `app.state`; lifespan storing the engine and session factory. Role and
-empty-state tests are not applicable: M1 has no auth, collections or tables.
+Coverage: health 200 and payload; health still 200 with a deliberately unreachable
+database URL (proves liveness does not touch the database); required `DATABASE_URL`;
+unknown environment rejected; defaults; cached settings; settings read from the
+environment; engine URL; session factory binding; `get_session` using the factory on
+`app.state`; lifespan storing and disposing the engine; conftest keeping a caller-supplied
+`DATABASE_URL` and deriving the URL port from `POSTGRES_PORT`. The framework-only 404 test
+and the `log_level` default assertion are removed per review. Role and empty-state tests
+are not applicable: M1 has no auth, collections or tables.
 
 Database checks. The local `.env` is git-ignored and not committed; it sets
-`POSTGRES_PORT=5434` because the host's PostgreSQL 18 owns 5432.
+`POSTGRES_PORT=5434`.
 
 ```
-$ docker compose -p backend down -v
- Container backend-db-1 Removed
- Network backend_default Removed
- Volume backend_postgres-data Removed
+$ docker compose config
+    ports:
+      - mode: ingress
+        host_ip: 127.0.0.1
+        target: 5432
+        published: "5434"
+        protocol: tcp
+...
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -h 127.0.0.1 -U leafclutch -d leafclutch
 
-$ docker compose up -d --wait db
- Container leafclutch-db-1 Created
+$ docker compose up -d --wait --force-recreate db
+ Container leafclutch-db-1 Recreate
+ Container leafclutch-db-1 Recreated
  Container leafclutch-db-1 Starting
  Container leafclutch-db-1 Started
  Container leafclutch-db-1 Waiting
@@ -198,55 +247,57 @@ $ docker compose up -d --wait db
 
 $ docker compose ps
 NAME              IMAGE         COMMAND                  SERVICE   CREATED         STATUS                   PORTS
-leafclutch-db-1   postgres:16   "docker-entrypoint.s…"   db        5 seconds ago   Up 5 seconds (healthy)   0.0.0.0:5434->5432/tcp, [::]:5434->5432/tcp
+leafclutch-db-1   postgres:16   "docker-entrypoint.s…"   db        5 seconds ago   Up 5 seconds (healthy)   127.0.0.1:5434->5432/tcp
+
+$ docker compose port db 5432
+127.0.0.1:5434
 
 $ uv run alembic current
 INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
 INFO  [alembic.runtime.migration] Will assume transactional DDL.
 exit=0
 
-$ docker compose exec db psql -U leafclutch -lqt
- leafclutch      | leafclutch | UTF8     | libc            | en_US.utf8 | en_US.utf8 |            |           |
- leafclutch_test | leafclutch | UTF8     | libc            | en_US.utf8 | en_US.utf8 |            |           |
- postgres        | leafclutch | UTF8     | libc            | en_US.utf8 | en_US.utf8 |            |           |
- template0       | leafclutch | UTF8     | libc            | en_US.utf8 | en_US.utf8 | =c/leafclutch            +
-                 |            |          |                 |            |            |            |           | leafclutch=CTc/leafclutch
- template1       | leafclutch | UTF8     | libc            | en_US.utf8 | en_US.utf8 | =c/leafclutch            +
-                 |            |          |                 |            |            |            |           | leafclutch=CTc/leafclutch
-
-$ uv run uvicorn app.main:app --port 8000
-GET /health -> 200 {"status":"ok"}
-INFO:     Application startup complete.
-INFO:     127.0.0.1:53036 - "GET /health HTTP/1.1" 200 OK
-INFO:     Application shutdown complete.
+$ docker compose --env-file /dev/null config   # with no .env, the default is 5432
+    ports:
+      - mode: ingress
+        host_ip: 127.0.0.1
+        target: 5432
+        published: "5432"
+        protocol: tcp
 ```
 
-The initdb script ran: `leafclutch_test` exists alongside the `leafclutch` database
-created by `POSTGRES_DB`. Alembic exits 0 with no revision applied and no error.
+The initdb databases (`leafclutch`, `leafclutch_test`) still exist; the volume was not
+recreated, so the init script did not rerun. Alembic exits 0 with no revision applied and
+no error.
 
 ## Review
 
 ## Docs updated
 
-- `Backend/README.md`: setup, run, checks, database (including the configurable host
-  port), layout and documentation table; renamed from the empty `Backend/README.MD` with
-  `git mv`.
+- `Backend/README.md`: setup, run, checks, database (loopback-only service, configurable
+  host port and `up -d --wait db`), layout and documentation table; renamed from the empty
+  `Backend/README.MD` with `git mv`.
+- `Backend/docs/DATABASE.md`: open question 1 now records the confirmed sync SQLAlchemy
+  2.0 + psycopg 3 / Python 3.12 data layer and why async was rejected. Nothing else in
+  that document changed.
 - `Backend/docs/work/0001-skeleton.md`: this record.
 - `Backend/docs/work/README.md`: task index entry (orchestrator).
-- No `DATABASE.md`, `CONTRACT.md` or `ADMIN.md` change: M1 adds no table, payload, role or
-  admin screen. The OpenAPI schema is generated from the app (`/openapi.json`, `/docs`);
-  there is no static spec to edit. There is no ADR directory under `Backend/docs/`.
+- No `CONTRACT.md` or `ADMIN.md` change: M1 adds no payload, role or admin screen. The
+  OpenAPI schema is generated from the app (`/openapi.json`, `/docs`); there is no static
+  spec to edit. There is no ADR directory under `Backend/docs/`.
+
+## Remaining
+
+none. Every acceptance criterion is met and demonstrated; all three Medium and seven Low
+findings are fixed, and no check from the review brief is outstanding. Environment limits
+are recorded under `## Not verified`.
+
+## Next
 
 ## Open questions
 
-- `tests/conftest.py` still builds the test URL with host port 5432. M1 opens no
-  connection, so the suite is unaffected, but the first database-backed test must take the
-  port from the local override (`POSTGRES_PORT`/`.env`) rather than hard-coding 5432.
-- `DATABASE.md` "Open questions" item 1 still says "Confirm before scaffolding". This task
-  settles it as sync SQLAlchemy 2.0 + psycopg 3 on Python 3.12, but the source document
-  was left untouched because the brief lists the expected files and says nothing else.
-  A follow-up docs edit may be wanted.
-- `StarletteDeprecationWarning` recommends `httpx2` for `TestClient`. Not changed here.
+- `StarletteDeprecationWarning` recommends `httpx2` for `TestClient`. Not changed here; it
+  is a dependency decision outside this review round.
 
 ## Not verified
 
@@ -254,6 +305,7 @@ created by `POSTGRES_DB`. Alembic exits 0 with no revision applied and no error.
 - `uv sync` from a literal clean checkout — it ran in this working tree and resolved
   `uv.lock`; no second clone was made.
 - The default Compose port 5432 — this machine cannot bind it (native PostgreSQL 18), so
-  only the `POSTGRES_PORT=5434` override was verified end to end.
+  only the `POSTGRES_PORT=5434` override was verified end to end. `docker compose config`
+  confirms the default still resolves to 5432.
 - Database-backed tests — M1 has none; the suite constructs an engine but opens no
-  connection.
+  connection. The `POSTGRES_PORT`-derived test URL is unit-tested, not used to connect.

@@ -21,7 +21,6 @@ class Settings(BaseSettings):
 
     environment: Literal["development", "staging", "production", "test"] = "development"
     database_url: str
-    log_level: Literal["debug", "info", "warning", "error", "critical"] = "info"
 
 
 @lru_cache
