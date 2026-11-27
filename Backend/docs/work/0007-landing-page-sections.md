@@ -685,6 +685,10 @@ evidence.
 - The second half is fixed too: `content_version_item_frozen` closes the draft-version
   move. No code, test or migration work is open for task 0007.
 
+- **Closed in task 0008:** the real-commit paths are now a committed test on a separate
+  connection, and the seven guard bodies are pinned exactly against the `0005` constants.
+  The M3/M4 function bodies remain fragment-pinned, as recorded in task 0008.
+
 ## Next
 
 M6 — the catalogue, revisions `0006_services` to `0008_proof`: service groups and services,

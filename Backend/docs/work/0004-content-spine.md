@@ -468,6 +468,11 @@ Deferred with reasons after the round-2 recheck:
 - **L4 — the revision was edited in place.** Safe because no database outside this checkout
   applied `307c96d`; if one did, a new revision is required rather than a schema recreation.
 
+- **Closed in task 0008:** L1's cases — published with SEO, pointer removed, the item
+  cascade, archive clearing and the six restrict violations — are pinned in
+  `tests/test_content_spine.py`. The normalisation half of L2 was closed in task 0007; its
+  function-body half remains deferred, as recorded in task 0008.
+
 ## Next
 
 M5 — landing page sections (revision `0005`): the ten sections, their child tables and the

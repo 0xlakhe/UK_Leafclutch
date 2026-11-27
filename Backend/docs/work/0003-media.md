@@ -303,6 +303,11 @@ constraints present in the migration, the model and the document.
 
 Outcome: **accepted**. No open Critical or High.
 
+The four deferred Lows above were closed in task 0008: `test_media_schema.py` keeps
+PostgreSQL's parentheses and a regrouping now fails the catalog test; `alt=''` in
+`evidence` and both timestamp checks on the update and promotion paths are tested. The
+"decorative parentheses" sentence in `## Open questions` is superseded by that work.
+
 ## Next
 
 M4 — content spine (revision `0004`): `content_item`, `content_version`,

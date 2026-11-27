@@ -543,6 +543,33 @@ Next: M6 — the catalogue.
 
 Canonical: [0007-landing-page-sections.md](0007-landing-page-sections.md)
 
+---
+
+## Task: TASK-0008 — deferred test-strength items
+
+Status: done
+Date: 2026-11-28
+
+Changed:
+- `tests/test_media_schema.py`: parenthesis-preserving catalog comparison, the empty-evidence alt case, and both timestamp checks on the update and promotion paths.
+- `tests/test_content_spine.py`: twelve behavioural pins for published-with-SEO deletion, pointer-removed history, the item cascade, archive clearing and the six restrict violations.
+- `tests/test_page_sections.py`: seven real-commit cases on a separate connection with cleanup, and exact `prosrc` pins for the seven guard bodies, derived from the migration constants.
+- Work file and index row; closure notes in tasks 0003, 0004 and 0007.
+
+Evidence:
+- 340 tests in both modes, run twice; ruff, mypy and `alembic check`; zero rows left in `content_item`, `content_version`, `page_section`, `section_version`, `staff` and `auth.users`.
+- Mutations: a regrouped and a reordered media constraint, a weakened alt bound, both timestamp checks, two FK actions changed to `CASCADE`, a reordered guard body, and an eighth-function probe each fail the matching test.
+- No schema, application, model or document-of-record change.
+
+Decisions:
+- The M3/M4 function bodies stay fragment-pinned: their source is inline in pushed revisions and duplicating the bodies adds no branch coverage beyond the mutation proofs.
+- The page-section bodies are pinned against the migration constants, not `DATABASE.md`; the module docstring says so.
+
+Remaining: none.
+Next: M6 — the catalogue.
+
+Canonical: [0008-deferred-test-strength.md](0008-deferred-test-strength.md)
+
 
 
 

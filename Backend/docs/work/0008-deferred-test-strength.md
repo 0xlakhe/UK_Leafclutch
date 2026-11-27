@@ -1,7 +1,7 @@
 ---
 task: 0008
 title: Close the deferred test-strength items
-status: in-progress
+status: done
 branch: prabesh
 started: 2026-11-27
 updated: 2026-11-27
@@ -20,25 +20,25 @@ This is test work. No application, migration, model or schema-document change: t
 
 ## Acceptance criteria
 
-- [ ] `test_media_schema.py` compares `pg_get_constraintdef` with parentheses retained; a
+- [x] `test_media_schema.py` compares `pg_get_constraintdef` with parentheses retained; a
       pure regrouping fails, and the existing bound and column mutations still fail.
-- [ ] `alt=''` in `evidence` is refused, and `alt=null` in `evidence` is still allowed.
-- [ ] `media_deleted_after_upload` and `media_promoted_after_upload` are exercised on the
+- [x] `alt=''` in `evidence` is refused, and `alt=null` in `evidence` is still allowed.
+- [x] `media_deleted_after_upload` and `media_promoted_after_upload` are exercised on the
       public-row update and staged-promotion paths, not only on insert.
-- [ ] `test_content_spine.py` pins: deleting a published version with SEO, deleting a
+- [x] `test_content_spine.py` pins: deleting a published version with SEO, deleting a
       published version after the pointer was removed, deleting an item with a live
       pointer, clearing the archive flags, and the staff/media restrict violations
       (`created_by`, `updated_by`, `published_by` on both rows, `og_image_id`).
-- [ ] `test_page_sections.py` has a real-commit test on a separate connection for the
+- [x] `test_page_sections.py` has a real-commit test on a separate connection for the
       changed reinsert, identical reinsert, create-and-delete, sections-then-page and
       version-move paths, with cleanup in `finally`.
-- [ ] The seven M5 guard functions are compared by exact normalised body against the
+- [x] The seven M5 guard functions are compared by exact normalised body against the
       migration's `ASSERT_..._SQL` constants. M3/M4 body pins stay as fragments, with the
       reason recorded: their source is inline in pushed revisions and duplicating the
       bodies adds no branch coverage beyond the existing mutation proofs.
-- [ ] `uv run ruff check .`, `uv run mypy app`, `uv run pytest` in both import modes and
+- [x] `uv run ruff check .`, `uv run mypy app`, `uv run pytest` in both import modes and
       `uv run alembic check` pass; 322 or more tests.
-- [ ] Only `Backend/` changes.
+- [x] Only `Backend/` changes.
 
 ## Non-goals
 
@@ -501,6 +501,22 @@ FAILED tests/test_page_sections.py::test_the_installed_section_functions_pin_the
 After the restore the same test passed: `1 passed, 1 warning in 0.18s`.
 
 ## Review
+
+One independent review round; no Critical, High or Medium. Three Lows were fixed in
+`218a156`: the module docstring now says which pin compares with which source; the
+function map is derived from the migration constants so an eighth guard cannot escape;
+and the recorded media mutation is described as meaning-changing, with the reviewer's
+equivalent clause reorder as the separate evidence.
+
+Verified by the reviewer: regrouped and reordered media constraints fail the catalog pin;
+weakening the alt bound, `media_deleted_after_upload` or `media_promoted_after_upload`
+fails the new tests; changing `content_seo_og_image_id_fkey` or
+`content_item_created_by_fkey` to `CASCADE` fails the FK tests; a reordered
+`assert_page_section_position()` body fails the exact pin while the behavioural cases
+pass; the real-commit cases run twice and leave zero rows in the five tables and
+`auth.users`; 340 tests in both modes, ruff, mypy and `alembic check`.
+
+Outcome: **accepted**. No open Critical, High or Medium.
 
 ## Docs updated
 
