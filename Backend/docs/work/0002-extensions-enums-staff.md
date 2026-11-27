@@ -157,6 +157,23 @@ functions yet.
 - **2026-11-27 — L6 correction.** The `path_separator` entry above is superseded: the
   review found the setting has no effect with a single path, so it was removed and the
   Alembic deprecation warning is accepted in the test output.
+- **2026-11-27 — Round-3 review fixes (High, deadlock Medium, two Lows).** Moved the
+  advisory lock out of the row trigger into a statement-level `staff_lock_writes` trigger
+  and its `lock_staff_writes()` function, so the lock precedes every row lock. The row
+  guard now counts through `select ... for update`, which under REPEATABLE READ and
+  SERIALIZABLE raises `40001` instead of reading a stale snapshot. Added the deadlock
+  regression test (delete one Admin, another writer updates the second, the first updates
+  the second), a structural test for the function bodies and trigger levels, and RR and
+  SERIALIZABLE isolation tests. Scoped the `pg_locks` wait to the current database. Made
+  the bootstrap stub upgrade-safe with a guarded `DO` block. Updated `DATABASE.md`.
+- **2026-11-27 — Round-3 observed outcome.** Both RR and SERIALIZABLE runs end with
+  `(psycopg.errors.SerializationFailure) could not serialize access due to concurrent
+  update` and exactly one active Admin; the test accepts either that or the refusal.
+- **2026-11-27 — Round-3 lint fix.** The first ruff run rejected a 101-character
+  `pg_locks` string; it was split across lines. No behaviour change.
+- **2026-11-27 — Databases rebuilt again.** `0002` was edited in place before release, so
+  the volume was recreated and the test database round-tripped. The installed definitions
+  were checked with `pg_get_functiondef` and `pg_trigger`.
 
 ## Decisions made
 
@@ -203,15 +220,36 @@ functions yet.
 - **The test Alembic config uses an absolute `script_location`.** The fixture builds
   `Config(<Backend>/alembic.ini)` and overrides the script location so `uv run pytest`
   works from another working directory; the URL still comes from application settings.
-- **The last-Admin guard takes a transaction-scoped advisory lock (deviation from
-  `DATABASE.md`).** The reviewer reproduced the race with two connections: both deleted a
-  different active Admin, both triggers counted the other row as active, and both committed,
-  leaving zero active Admins. The trigger now runs
-  `perform pg_advisory_xact_lock(hashtext('staff_last_admin'))` before either branch, so the
-  second transaction counts only after the first ends and refuses. One constant key covers
-  this invariant; the lock serialises all staff updates and deletes, which is acceptable at
-  staff write volume. `DATABASE.md` §Timestamps and the last Admin still shows the unguarded
-  body: the source document needs the same change, and the orchestrator owns that edit.
+- **Round 2: the last-Admin guard took a transaction-scoped advisory lock inside the row
+  trigger (superseded in round 3).** The reviewer reproduced the race with two connections:
+  both deleted a different active Admin, both triggers counted the other row as active, and
+  both committed, leaving zero active Admins. The row trigger was given
+  `perform pg_advisory_xact_lock(hashtext('staff_last_admin'))`. That closed READ COMMITTED
+  but not REPEATABLE READ or SERIALIZABLE, where the statement snapshot predates the lock,
+  and it introduced an advisory-versus-row-lock deadlock; round 3 moved the lock to a
+  statement trigger and made the count a locking read.
+- **The advisory lock is statement-level and the row guard reads with `for update`
+  (round 3).** `staff_lock_writes` takes the lock before any row lock, so two writers
+  cannot each hold a row the other needs, and `enforce_last_admin` counts through a
+  `for update` subquery. Under READ COMMITTED the statement lock serialises the writers;
+  under REPEATABLE READ and SERIALIZABLE a concurrent committed change raises `40001`,
+  which is the correct outcome for this invariant. The alternative, documenting READ
+  COMMITTED as the only supported level, was rejected.
+- **`DATABASE.md` now carries the change.** §Timestamps and the last Admin has the
+  statement trigger, the locking-read row body and the isolation note, and its migration
+  table says the `0001` downgrade drops enums only. The design workspace still needs the
+  same patch; until it lands, the two copies differ and this note stays.
+- **The structural test pins the installed definitions.** `pg_get_functiondef` must
+  contain `for update` for `enforce_last_admin` and `pg_advisory_xact_lock` for
+  `lock_staff_writes`, and `pg_trigger` must show `staff_lock_writes` at statement level
+  and `staff_last_admin` at row level, so a database that still has the round-2 function
+  cannot pass silently.
+- **The bootstrap stub upgrades in place.** A guarded `DO` block adds `email` and
+  `last_sign_in_at` only when `information_schema.columns` says they are missing; a fresh
+  stub has them and Supabase has them, so both are no-ops.
+- **The `pg_locks` wait is scoped to the current database.** Advisory locks are
+  database-scoped; matching on `database = (select oid from pg_database where datname =
+  current_database())` prevents a waiter in another database from satisfying the poll.
 - **The downgrade leaves `pgcrypto` and `citext` installed (deviation from `DATABASE.md`'s
   "Drop enums and extensions (dev only)").** Extensions are shared objects that may predate
   this revision or belong to another schema; dropping them can fail or remove support other
@@ -270,6 +308,16 @@ Review fixes (second commit):
 - `Backend/README.md` — extension behaviour, required round trip, stub shape
 - `Backend/docs/work/0002-extensions-enums-staff.md` — this log
 
+Review fixes (third commit):
+
+- `Backend/docs/DATABASE.md` — statement trigger, locking-read body, isolation note,
+  `0001` downgrade wording
+- `Backend/migrations/versions/0002_staff.py` — statement-level lock, locking read, downgrade
+  drops both triggers and both functions
+- `Backend/scripts/bootstrap_local.sql` — guarded `DO` block for an existing stub
+- `Backend/tests/test_staff_schema.py` — deadlock, isolation and structural tests; scoped wait
+- `Backend/docs/work/0002-extensions-enums-staff.md` — this log
+
 ## Migrations
 
 - `0001_extensions_enums` (no parent) — `create extension if not exists pgcrypto` and
@@ -281,15 +329,16 @@ Review fixes (second commit):
   installed.
 - `0002_staff` (parent `0001_extensions_enums`) — `staff` with its primary key,
   `staff_email_unique`, `staff_display_name_length`, the `auth.users` and self-referencing
-  foreign keys, `staff_active_role_idx`; then `set_updated_at()`,
-  `staff_set_updated_at`, `enforce_last_admin()` and `staff_last_admin`. The review fix adds
-  `perform pg_advisory_xact_lock(hashtext('staff_last_admin'))` at the start of
-  `enforce_last_admin()`; the rest of the body and both trigger definitions are unchanged.
-  Downgrade drops the table (with its index, constraints and triggers) and both functions.
-  Upgrade, downgrade and a second upgrade were run on a fresh Compose volume.
-- The review fix edited already-applied revisions. No database outside this checkout had
-  run them, so the local volume was recreated and both local databases round-tripped; the
-  live function was checked with `pg_get_functiondef` and contains the advisory lock.
+  foreign keys, `staff_active_role_idx`; then `set_updated_at()` and its trigger,
+  `lock_staff_writes()` and the statement trigger `staff_lock_writes`, and
+  `enforce_last_admin()` with the `for update` count and the row trigger `staff_last_admin`.
+  Downgrade drops both last-Admin triggers, the table (with the timestamp trigger and the
+  index) and all three functions. Upgrade, downgrade and a second upgrade were run on the
+  test database.
+- The review fixes edited already-applied revisions twice. No database outside this
+  checkout had run them, so the local volume was recreated and both local databases
+  round-tripped; the live definitions were checked with `pg_get_functiondef` and
+  `pg_trigger` (statement trigger at statement level, row trigger at row level).
 - `content_version_set_updated_at` and `enquiry_set_updated_at` are not created here;
   the revisions that create `content_version` and `enquiry` will attach them.
 - `auth.users` is not a migration. `scripts/bootstrap_local.sql` creates it idempotently
@@ -301,9 +350,81 @@ Review fixes (second commit):
 
 ## Tests
 
-The block below is the **actual run** after the review fixes (PostgreSQL 18.7, fresh
-Compose volume). The first-round 50-test block further down is **superseded** by it; its
-failure entries are kept as history.
+The block below is the **actual run** for round 3 (PostgreSQL 18.7, fresh Compose volume).
+The 54-test round-2 block and the 50-test first-round block further down are
+**superseded**; their failure entries are kept as history.
+
+```
+$ uv run ruff check .
+All checks passed!
+
+$ uv run mypy app
+Success: no issues found in 6 source files
+
+$ uv run pytest -q
+58 passed, 4 warnings in 0.70s
+
+$ uv run pytest -q --import-mode=importlib
+58 passed, 4 warnings in 0.56s
+
+$ uv run alembic check
+No new upgrade operations detected.
+
+$ uv run alembic current
+0002_staff (head)
+
+$ DATABASE_URL=<test> uv run alembic downgrade base
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+INFO  [alembic.runtime.migration] Running downgrade 0002_staff -> 0001_extensions_enums, The staff table, the last-Admin guard and the timestamp trigger.
+INFO  [alembic.runtime.migration] Running downgrade 0001_extensions_enums -> , Extensions and every enum type.
+
+$ docker compose exec -T db psql -U leafclutch -d leafclutch_test -c "select extname from pg_extension order by extname;"
+ extname
+----------
+ citext
+ pgcrypto
+ plpgsql
+(3 rows)
+
+$ DATABASE_URL=<test> uv run alembic upgrade head
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_extensions_enums, Extensions and every enum type.
+INFO  [alembic.runtime.migration] Running upgrade 0001_extensions_enums -> 0002_staff, The staff table, the last-Admin guard and the timestamp trigger.
+
+$ DATABASE_URL=<test> uv run alembic current
+0002_staff (head)
+```
+
+The specific concurrency tests:
+
+```
+$ uv run pytest tests/test_staff_schema.py -k "concurrent or deadlock or stronger_isolation or installed_guard" -vv
+collecting ... collected 27 items / 22 deselected / 5 selected
+tests/test_staff_schema.py::test_the_installed_guard_is_the_locking_read_version PASSED [ 20%]
+tests/test_staff_schema.py::test_concurrent_deletes_cannot_remove_both_active_admins PASSED [ 40%]
+tests/test_staff_schema.py::test_a_delete_then_an_update_of_the_other_admin_does_not_deadlock PASSED [ 60%]
+tests/test_staff_schema.py::test_the_guard_holds_at_stronger_isolation[REPEATABLE READ] PASSED [ 80%]
+tests/test_staff_schema.py::test_the_guard_holds_at_stronger_isolation[SERIALIZABLE] PASSED [100%]
+================= 5 passed, 22 deselected, 1 warning in 0.27s ==================
+```
+
+What the isolation test observes, from a direct run of the same interleaving with the
+exception printed:
+
+```
+REPEATABLE READ -> OperationalError (psycopg.errors.SerializationFailure) could not serialize access due to concurrent update | active admins: 1
+SERIALIZABLE -> OperationalError (psycopg.errors.SerializationFailure) could not serialize access due to concurrent update | active admins: 1
+```
+
+`DATABASE_URL=<test>` is the disposable test target,
+`postgresql+psycopg://leafclutch:leafclutch@127.0.0.1:5434/leafclutch_test`. The downgrade
+leaves `citext` and `pgcrypto` installed, as Medium 1 requires.
+
+Superseded — the round-2 run, after the first review fixes. Every command ran from
+`Backend/`; Docker Compose's progress lines are shown once each. The failing runs of that
+round are quoted after the coverage notes.
 
 ```
 $ uv run ruff check .
@@ -480,25 +601,29 @@ table "staff" violates foreign key constraint "staff_user_id_fkey"
 13 failed, 33 passed, 3 warnings in 1.01s
 ```
 
-Coverage of `tests/test_staff_schema.py` (23 tests; all but the concurrency test run inside
-a rolled-back transaction): the empty table at the start, with a message naming any stale
-committed row; a staff row requires an existing `auth.users` row, and deleting a staffed
-auth user is refused; deleting, demoting to `editor`, setting `active = false`, and
-demoting and deactivating in one update each raise
+Coverage of `tests/test_staff_schema.py` (27 tests; the three multi-connection tests commit
+outside the `db` fixture, the rest run inside a rolled-back transaction): the empty table at
+the start, with a message naming any stale committed row; a staff row requires an existing
+`auth.users` row, and deleting a staffed auth user is refused; deleting, demoting to
+`editor`, setting `active = false`, and demoting and deactivating in one update each raise
 `the last active Admin cannot be removed` and leave the row as it was; a second active
 Admin makes the three single changes succeed; an editor and an inactive admin are not
 protected, and a second inactive Admin does not protect the only active one; a duplicate
 `staff.email` is refused in the same case and in a different case (`citext`);
 `display_name` of 1 and 100 characters is accepted while `''` and 101 are refused by
 `staff_display_name_length`; the server defaults apply; deleting a missing id is a no-op;
-and an update moves `updated_at` forward while `created_at` is unchanged. The concurrency
-test commits two active Admins on independent connections, starts the second delete on a
-worker thread, waits on `pg_locks` until it is blocked by the advisory lock, commits the
-first delete, and asserts one refusal, the documented message, and exactly one active
-Admin left; it truncates the committed rows in a `finally` because the guard refuses to
-remove the last one. `tests/test_migrations.py` runs `alembic check` against
-`leafclutch_test` (no drift) and alters `staff.active`'s default inside the test transaction
-to prove that a changed server default is reported, then rolls it back.
+and an update moves `updated_at` forward while `created_at` is unchanged. A structural test
+reads `pg_get_functiondef` for both functions and `pg_trigger` for both trigger levels, so a
+stale definition cannot pass. The three multi-connection tests all commit two active Admins,
+wait on `pg_locks` (scoped to the current database) until the second writer is blocked, and
+clean up in a `finally`: the concurrent-delete test asserts one refusal, the documented
+message and one active Admin; the deadlock test starts a second writer's `display_name`
+update, has the first transaction update the same row, and asserts both commit with the
+second writer's value and one active Admin; the RR/SERIALIZABLE tests assert a refusal or
+`could not serialize access` and never zero active Admins. `tests/test_migrations.py` runs
+`alembic check` against `leafclutch_test` (no drift) and alters `staff.active`'s default
+inside the test transaction to prove that a changed server default is reported, then rolls
+it back.
 
 ## Review
 
@@ -510,10 +635,13 @@ to prove that a changed server default is reported, then rolls it back.
   columns, the statement that `alembic downgrade base` does not remove the extensions, and
   the required round trip against the test database.
 - `Backend/docs/work/0002-extensions-enums-staff.md` — this log.
-- No `Backend/docs/DATABASE.md`, `ADMIN.md` or `CONTRACT.md` change: this task implements
-  those documents, their decisions are unchanged, and the brief forbids editing them.
-  `DATABASE.md` needs two follow-up edits, recorded here for its owner: the advisory lock in
-  `enforce_last_admin()` and the extension-preserving downgrade.
+- `Backend/docs/DATABASE.md` — §Timestamps and the last Admin now has
+  `lock_staff_writes()` with the statement trigger `staff_lock_writes`, the `for update`
+  count in `enforce_last_admin()`, and the isolation note; the migration table says the
+  `0001` downgrade drops enums only and the `0002` contents name both triggers. The design
+  workspace still needs the same patch; the divergence note in `## Decisions made` stays
+  until it lands.
+- No `Backend/docs/ADMIN.md` or `CONTRACT.md` change: no role, screen or payload changed.
 - No OpenAPI change: no endpoint was added or changed.
 - No ADR: `Backend/docs/` has no ADR directory.
 
@@ -534,10 +662,11 @@ Accepted limitations from the review, deferred with their reasons:
 
 ## Open questions
 
-- `DATABASE.md` §Timestamps and the last Admin still shows the unguarded
-  `enforce_last_admin()` body, and its revision table still says the `0001` downgrade drops
-  the extensions. Both are now deliberate deviations recorded in `## Decisions made`; the
-  orchestrator owns the document update.
+- The design workspace still holds the unguarded `enforce_last_admin` body and the old
+  "drop extensions" downgrade wording; this checkout's `DATABASE.md` is patched, so the two
+  copies differ until the design workspace receives the same patch.
+- The RR/SERIALIZABLE guard raises `40001`; the admin API (M15/M16) needs to translate or
+  retry that for staff writes. That is not in M2's scope, but it must not be lost.
 - The validation runbook's admin fixture now has the `auth.users` columns it needs, but the
   full runbook still needs `auth.mfa_factors` (for `staff_account`) and the tables from
   M3–M15. That wider stub is a harness change at M15, not a revision.
@@ -557,7 +686,10 @@ Accepted limitations from the review, deferred with their reasons:
   not type-checked.
 - Datasets: no production or staging data was involved; the volume was created from
   scratch.
-- The concurrency test proves the lock with two connections on PostgreSQL 18; neither a
-  higher connection count nor a production load was exercised.
+- The concurrency, deadlock and RR/SERIALIZABLE tests use two connections on PostgreSQL 18;
+  a higher connection count and a production write load were not exercised.
+- The bootstrap upgrade path was verified by dropping `email` and `last_sign_in_at` from the
+  local stub and rerunning the script; it was not run against Supabase, where the columns
+  already exist.
 - The round trip is manual (L4); nothing enforces it in CI, because the repository has no
   CI yet.

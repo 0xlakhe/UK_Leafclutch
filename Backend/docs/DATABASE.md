@@ -1909,6 +1909,23 @@ create trigger media_immutable
 ```
 
 ```sql
+create or replace function lock_staff_writes()
+returns trigger
+language plpgsql
+as $$
+begin
+  -- Taken before any row lock: two writers cannot each hold a row the other needs while
+  -- one waits here. The key is constant for the staff write path and the lock ends with
+  -- the transaction.
+  perform pg_advisory_xact_lock(hashtext('staff_last_admin'));
+  return null;
+end;
+$$;
+
+create trigger staff_lock_writes
+  before update or delete on staff
+  for each statement execute function lock_staff_writes();
+
 create or replace function enforce_last_admin()
 returns trigger
 language plpgsql
@@ -1919,8 +1936,11 @@ begin
   if tg_op = 'DELETE' then
     if old.role = 'admin' and old.active then
       select count(*) into remaining
-      from staff
-      where role = 'admin' and active and user_id <> old.user_id;
+      from (
+        select 1 from staff
+        where role = 'admin' and active and user_id <> old.user_id
+        for update
+      ) locked;
       if remaining = 0 then
         raise exception 'the last active Admin cannot be removed';
       end if;
@@ -1931,8 +1951,11 @@ begin
   if old.role = 'admin' and old.active
      and not (new.role = 'admin' and new.active) then
     select count(*) into remaining
-    from staff
-    where role = 'admin' and active and user_id <> old.user_id;
+    from (
+      select 1 from staff
+      where role = 'admin' and active and user_id <> old.user_id
+      for update
+    ) locked;
     if remaining = 0 then
       raise exception 'the last active Admin cannot be removed';
     end if;
@@ -1947,8 +1970,13 @@ create trigger staff_last_admin
   for each row execute function enforce_last_admin();
 ```
 
-The trigger counts active Admins other than the row being changed. Demoting the last
-Admin, deactivating them or deleting them all fail. A second Admin must exist first.
+The statement trigger takes a transaction-scoped advisory lock before any row lock, so two
+staff writers serialise instead of forming a lock cycle. The row trigger counts active
+Admins other than the row being changed with a locking read: under READ COMMITTED the
+statement lock already serialises, and under REPEATABLE READ or SERIALIZABLE a concurrent
+committed change raises a serialization failure (`40001`) rather than being missed by the
+snapshot. Demoting the last Admin, deactivating them or deleting them all fail. A second
+Admin must exist first.
 
 ### Publication and immutability
 
@@ -4408,7 +4436,7 @@ Supabase-specific; the test harness either runs Supabase local or skips this mig
 | A service group is live before its services                                                                                    | `sync_live_projection` trigger                                   |
 | A project's live order is the published version's order                                                                        | `sync_live_projection` trigger                                   |
 | A group with live services cannot be unpublished                                                                               | `guard_group_unpublish` trigger                                  |
-| The last active Admin cannot be removed                                                                                        | `enforce_last_admin` trigger                                     |
+| The last active Admin cannot be removed                                                                                        | `staff_lock_writes` and `staff_last_admin` triggers              |
 | Enquiries move new → in progress → closed                                                                                    | `enquiry_status_flow` trigger                                    |
 | Every enquiry attempt is rate limited                                                                                          | API writes `rate_limit_event` before the checks                  |
 | Enquiry field limits and consent format                                                                                        | `enquiry` checks plus Pydantic                                   |
@@ -4559,8 +4587,8 @@ Alembic is the source of truth. The SQL above is split into these revisions:
 
 | Revision                  | Contents                                                                                                                                                                                                   | Downgrade                            |
 | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
-| `0001_extensions_enums` | Extensions and all enum types, including the `site_logo` role                                                                                                                                                                              | Drop enums and extensions (dev only) |
-| `0002_staff`            | `staff`, last-Admin trigger, timestamp trigger                                                                                                                                                           | Drop table and functions             |
+| `0001_extensions_enums` | Extensions and all enum types, including the `site_logo` role                                                                                                                                                                              | Drop enums only; extensions stay |
+| `0002_staff`            | `staff`, last-Admin statement and row triggers, timestamp trigger                                                                                                                                                           | Drop table and functions             |
 | `0003_media`            | `media`, media immutability trigger                                                                                                                                                                      | Drop table and trigger               |
 | `0004_content_core`     | `content_item`, `content_version`, `content_publication`, `content_seo`, the immutable-content function                                                                                                             | Drop tables and function             |
 | `0005_page_sections`    | `page_section`, `section_version`, `section_paragraph`, the four section child tables and their triggers, `section_version_item`                                                                        | Drop tables and triggers             |

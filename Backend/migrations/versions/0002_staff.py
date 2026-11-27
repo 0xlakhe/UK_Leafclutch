@@ -1,8 +1,12 @@
-"""The staff table, the timestamp trigger and the last-Admin guard.
+"""The staff table, the last-Admin guard and the timestamp trigger.
 
-The table uses SQLAlchemy operations so `alembic check` compares it with app/models.py;
-the function bodies and triggers are copied verbatim from Backend/docs/DATABASE.md
-§Timestamps and the last Admin.
+The table uses SQLAlchemy operations so `alembic check` compares it with app/models.py.
+
+The trigger SQL follows Backend/docs/DATABASE.md §Timestamps and the last Admin, with
+deliberate changes dated 27 November 2026: a statement-level `staff_lock_writes` trigger
+takes a transaction-scoped advisory lock before any row lock, and `enforce_last_admin`
+counts with a locking read so REPEATABLE READ and SERIALIZABLE cannot let a concurrent
+removal through. Both changes are in DATABASE.md.
 
 Revision ID: 0002_staff
 Revises: 0001_extensions_enums
@@ -34,6 +38,21 @@ end;
 $$;
 """
 
+LOCK_STAFF_WRITES_SQL = """
+create or replace function lock_staff_writes()
+returns trigger
+language plpgsql
+as $$
+begin
+  -- Taken before any row lock: two writers cannot each hold a row the other needs while
+  -- one waits here. The key is constant for the staff write path and the lock ends with
+  -- the transaction.
+  perform pg_advisory_xact_lock(hashtext('staff_last_admin'));
+  return null;
+end;
+$$;
+"""
+
 ENFORCE_LAST_ADMIN_SQL = """
 create or replace function enforce_last_admin()
 returns trigger
@@ -42,16 +61,14 @@ as $$
 declare
   remaining integer;
 begin
-  -- Serialise this invariant across transactions. Without the lock, two deletes of
-  -- different active Admins both count the other one and both commit, leaving no Admin.
-  -- The key is constant for this trigger alone and the lock is released at transaction end.
-  perform pg_advisory_xact_lock(hashtext('staff_last_admin'));
-
   if tg_op = 'DELETE' then
     if old.role = 'admin' and old.active then
       select count(*) into remaining
-      from staff
-      where role = 'admin' and active and user_id <> old.user_id;
+      from (
+        select 1 from staff
+        where role = 'admin' and active and user_id <> old.user_id
+        for update
+      ) locked;
       if remaining = 0 then
         raise exception 'the last active Admin cannot be removed';
       end if;
@@ -62,8 +79,11 @@ begin
   if old.role = 'admin' and old.active
      and not (new.role = 'admin' and new.active) then
     select count(*) into remaining
-    from staff
-    where role = 'admin' and active and user_id <> old.user_id;
+    from (
+      select 1 from staff
+      where role = 'admin' and active and user_id <> old.user_id
+      for update
+    ) locked;
     if remaining = 0 then
       raise exception 'the last active Admin cannot be removed';
     end if;
@@ -79,6 +99,12 @@ STAFF_SET_UPDATED_AT_TRIGGER_SQL = """
 create trigger staff_set_updated_at
   before update on staff
   for each row execute function set_updated_at();
+"""
+
+STAFF_LOCK_WRITES_TRIGGER_SQL = """
+create trigger staff_lock_writes
+  before update or delete on staff
+  for each statement execute function lock_staff_writes();
 """
 
 STAFF_LAST_ADMIN_TRIGGER_SQL = """
@@ -139,12 +165,18 @@ def upgrade() -> None:
 
     op.execute(SET_UPDATED_AT_SQL)
     op.execute(STAFF_SET_UPDATED_AT_TRIGGER_SQL)
+    op.execute(LOCK_STAFF_WRITES_SQL)
+    op.execute(STAFF_LOCK_WRITES_TRIGGER_SQL)
     op.execute(ENFORCE_LAST_ADMIN_SQL)
     op.execute(STAFF_LAST_ADMIN_TRIGGER_SQL)
 
 
 def downgrade() -> None:
-    # Dropping the table removes the index, constraints and both triggers with it.
+    # The explicit trigger drops document the pair; dropping the table also removes the
+    # timestamp trigger and the index.
+    op.execute("drop trigger staff_last_admin on staff")
+    op.execute("drop trigger staff_lock_writes on staff")
     op.drop_table("staff")
     op.execute("drop function enforce_last_admin()")
+    op.execute("drop function lock_staff_writes()")
     op.execute("drop function set_updated_at()")
