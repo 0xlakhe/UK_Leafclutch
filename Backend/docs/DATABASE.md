@@ -52,9 +52,10 @@ for these tables.
   them, and version history is kept, so a previously published image is never deleted.
 - **Enquiries are saved before email.** The enquiry and its two outbox rows are written
   in one transaction; a worker sends them with retries.
-- **Revalidation is an outbox.** A publish, unpublish or archive writes `revalidation`
-  rows in the same transaction; a FastAPI worker drains them. Restore writes none,
-  because it does not publish.
+- **Revalidation is an outbox.** A publish or unpublish writes `revalidation` rows in
+  the same transaction, and archive writes them through its unpublish when the item was
+  live; a permanent delete writes none, because the item never published. A FastAPI
+  worker drains them. Restore writes none, because it does not publish.
 - **Audit is append-only.** Sign-in attempts (success and failure, for AD-7 and the
   AD-10 slowdown) are written by FastAPI to `sign_in_event` and purged after
   12 months; application actions are written to `audit_log`. Supabase Auth's own
@@ -372,10 +373,15 @@ The `unique (id, kind)` constraint is redundant with the primary key, and exists
 typed child tables can use a composite foreign key that proves the kind. It is cheaper
 than a trigger on every insert.
 
-Deleting content in the admin archives it: `archive_content` unpublishes it, sets
-`archived_at` and `archived_by`, and keeps the versions for audit. `restore_content`
-clears the flags; a restored item is not live until it is republished. A hard delete is
-not exposed in the Phase 1 admin UI.
+Deleting content in the admin has two paths. `archive_content` is the normal delete: it
+unpublishes the item, sets `archived_at` and `archived_by`, and keeps the versions for
+audit. `restore_content` clears the flags; a restored item is not live until it is
+republished. `delete_content` permanently removes an item that was never published, has
+no approval or legal approval, is not one of the three fixed kinds that are never created
+from the UI (the landing page, its sections and settings) and is not referenced by a
+section draft or a service group's services; a legal page is creatable, so a
+never-published legal draft may be deleted. The row and its versions cascade, and its
+path or slug is freed.
 
 ```sql
 create table content_version (
@@ -464,8 +470,9 @@ create table content_publication (
 ```
 
 The publication pointer is the only thing that makes content live. Unpublishing
-deletes this row; the published versions remain for history. A page's revision on the
-wire is the pointed version's `version_number`.
+deletes this row and creates a draft copy from the last published version in the same
+transaction; the published versions remain for history. A page's revision on the wire is
+the pointed version's `version_number`.
 
 ## Page sections
 
@@ -1805,8 +1812,8 @@ verified from this repository and the 12-month record is a PRD §8 obligation (s
 the retention table and the open questions).
 
 Every action writes the same five columns and fills only the ones it has: a publish
-records `version_id` and `revision`, a section publish adds `page_id`, an unpublish or
-an archive records the `path`, and a retention run records `affected_rows`. A column
+records `version_id` and `revision`, a section publish adds `page_id`, an unpublish,
+archive or delete records the `path`, and a retention run records `affected_rows`. A column
 that is not relevant stays null. A new kind of detail is a new column and a migration,
 never a free-form bag.
 
@@ -2949,7 +2956,7 @@ create trigger audit_log_append_only
   for each row execute function prevent_audit_mutation();
 ```
 
-### Publish, unpublish and drafts
+### Publish, unpublish, delete and drafts
 
 Publishing a page or a project has two parts. FastAPI first copies every staged image
 attached to the winning version to `site-media` and flips those media rows; then it
@@ -3176,9 +3183,10 @@ $$;
 ```
 
 ```sql
-create or replace function unpublish_content(
+create or replace function _unpublish_internal(
   p_item_id uuid,
-  p_actor uuid
+  p_actor uuid,
+  p_create_draft boolean
 )
 returns void
 language plpgsql
@@ -3190,6 +3198,9 @@ declare
   v_path text;
   v_page_path text;
   v_tags text[];
+  v_ids uuid[];
+  v_id uuid;
+  v_unpublished uuid[] := '{}';
 begin
   select kind, path
     into v_kind, v_path
@@ -3202,13 +3213,26 @@ begin
   end if;
 
   if v_kind = 'landing_page' then
-    delete from content_publication
-    where item_id in (
-      select item_id from page_section where page_id = p_item_id
-    );
+    with removed as (
+      delete from content_publication
+      where item_id in (
+        select item_id from page_section where page_id = p_item_id
+      )
+      returning item_id
+    )
+    select coalesce(array_agg(item_id), '{}'::uuid[]) into v_ids from removed;
+
+    v_unpublished := v_unpublished || v_ids;
   end if;
 
-  delete from content_publication where item_id = p_item_id;
+  with removed as (
+    delete from content_publication
+    where item_id = p_item_id
+    returning item_id
+  )
+  select coalesce(array_agg(item_id), '{}'::uuid[]) into v_ids from removed;
+
+  v_unpublished := v_unpublished || v_ids;
 
   if v_kind = 'settings' then
     select array['settings', 'page:/'] || coalesce(
@@ -3238,6 +3262,31 @@ begin
 
   insert into audit_log (actor_id, action, entity_kind, entity_id, path)
   values (p_actor, 'unpublish', v_kind::text, p_item_id::text, v_path);
+
+  if p_create_draft then
+    foreach v_id in array v_unpublished loop
+      if exists (
+        select 1 from content_item
+        where id = v_id and archived_at is null
+      ) then
+        perform create_draft(v_id, p_actor);
+      end if;
+    end loop;
+  end if;
+end;
+$$;
+
+create or replace function unpublish_content(
+  p_item_id uuid,
+  p_actor uuid
+)
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  perform _unpublish_internal(p_item_id, p_actor, true);
 end;
 $$;
 ```
@@ -3271,7 +3320,7 @@ begin
   end if;
 
   if exists (select 1 from content_publication where item_id = p_item_id) then
-    perform unpublish_content(p_item_id, p_actor);
+    perform _unpublish_internal(p_item_id, p_actor, false);
   end if;
 
   update content_item
@@ -3333,12 +3382,91 @@ end;
 $$;
 ```
 
-Archive is the Phase 1 delete: it unpublishes a live item and then marks it archived in
+```sql
+create or replace function delete_content(
+  p_item_id uuid,
+  p_actor uuid
+)
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_kind content_kind;
+  v_path text;
+begin
+  select kind, path
+    into v_kind, v_path
+  from content_item
+  where id = p_item_id
+  for update;
+
+  if v_kind is null then
+    raise exception 'item % not found', p_item_id;
+  end if;
+
+  if v_kind in ('landing_page', 'page_section', 'settings') then
+    raise exception 'fixed item % cannot be deleted', p_item_id;
+  end if;
+
+  if exists (
+    select 1 from content_version
+    where item_id = p_item_id and status = 'published'
+  ) then
+    raise exception 'item % has been published and cannot be deleted', p_item_id;
+  end if;
+
+  if exists (
+    select 1
+    from approval a
+    join content_version cv on cv.id = a.version_id
+    where cv.item_id = p_item_id
+  ) or exists (
+    select 1
+    from legal_approval la
+    join content_version cv on cv.id = la.version_id
+    where cv.item_id = p_item_id
+  ) then
+    raise exception 'item % has approval evidence and cannot be deleted', p_item_id;
+  end if;
+
+  if exists (
+    select 1 from section_version_item where item_id = p_item_id
+  ) then
+    raise exception 'item % is referenced by a section version', p_item_id;
+  end if;
+
+  if v_kind = 'service_group' and (
+    exists (select 1 from service_version where group_item_id = p_item_id)
+    or exists (select 1 from service where group_item_id = p_item_id)
+  ) then
+    raise exception 'item % is referenced by a service or service version', p_item_id;
+  end if;
+
+  delete from content_item where id = p_item_id;
+
+  insert into audit_log (actor_id, action, entity_kind, entity_id, path)
+  values (p_actor, 'delete', v_kind::text, p_item_id::text, v_path);
+end;
+$$;
+```
+
+Archive is the normal delete: it unpublishes a live item and then marks it archived in
 one transaction, so the public change is an unpublish with its `page:<path>` and
-`routes` tags. Restore only clears the flags; the item is not live again until an Admin
-creates a draft (which copies the latest published version) and publishes it, and that
-publish writes its own revalidation row. A restored item is therefore not a public
-change, and restore writes no cache tag.
+`routes` tags. It creates no draft; a restored item returns to `unpublished`, or to the
+open draft that survived the archive, and the next `create_draft` copies the latest
+published version when no draft is open. Restore only clears the flags; the item is not
+live again until an Admin publishes it, and that publish writes its own revalidation
+row. A restored item is therefore not a public change, and restore writes no cache tag.
+Unpublish and archive share `_unpublish_internal`: unpublish passes drafts on (decision
+69), archive passes them off. `delete_content` permanently removes an item that was never
+published, carries no approval, is not one of the three fixed kinds that are never
+created from the UI (the landing page, its sections and settings) and is referenced by
+nothing; a legal page is creatable, so a never-published legal draft may be deleted. It
+writes one `delete` audit row and no revalidation row. Historical audit rows survive the
+delete, but their `version_id` and `page_id` become null (`on delete set null`);
+`entity_id`, `path` and `revision` remain.
 
 ```sql
 create or replace function revoke_approval(
@@ -3679,9 +3807,9 @@ end;
 $$;
 ```
 
-The draft copies the live version's typed row and its child rows. When the item is
-currently unpublished, it copies the latest published version instead, so unpublishing
-does not lose the content. A new item with no version gets an empty typed row of the
+The draft copies the live version's typed row and its child rows. When the item has no
+live pointer (after an unpublish, or on a restored item), it copies the latest published
+version instead, so unpublishing does not lose the content. A new item with no version gets an empty typed row of the
 right kind, which the editor fills; the publish gates refuse it until the required
 fields exist. It deliberately does not copy approvals or legal approvals: a new version
 needs a new permission.
@@ -4113,8 +4241,10 @@ revoke all on function publish_content(uuid, uuid, uuid) from public;
 revoke all on function publish_page(uuid, uuid, uuid[], uuid) from public;
 revoke all on function _publish_version(uuid, uuid, uuid) from public;
 revoke all on function unpublish_content(uuid, uuid) from public;
+revoke all on function _unpublish_internal(uuid, uuid, boolean) from public;
 revoke all on function archive_content(uuid, uuid) from public;
 revoke all on function restore_content(uuid, uuid) from public;
+revoke all on function delete_content(uuid, uuid) from public;
 revoke all on function create_draft(uuid, uuid) from public;
 revoke all on function revoke_approval(uuid, uuid, text) from public;
 revoke all on function purge_expired_enquiries() from public;
@@ -4132,6 +4262,7 @@ grant execute on function publish_page(uuid, uuid, uuid[], uuid) to api_runner;
 grant execute on function unpublish_content(uuid, uuid) to api_runner;
 grant execute on function archive_content(uuid, uuid) to api_runner;
 grant execute on function restore_content(uuid, uuid) to api_runner;
+grant execute on function delete_content(uuid, uuid) to api_runner;
 grant execute on function create_draft(uuid, uuid) to api_runner;
 grant execute on function revoke_approval(uuid, uuid, text) to api_runner;
 
@@ -4442,7 +4573,7 @@ Alembic is the source of truth. The SQL above is split into these revisions:
 | `0012_enquiries`        | `enquiry`, `enquiry_note`, `rate_limit_event`, status triggers                                                                                                                                       | Drop tables and triggers             |
 | `0013_delivery`         | `email_outbox`, `revalidation`                                                                                                                                                                         | Drop tables                          |
 | `0014_audit`            | `audit_log`, `sign_in_event`, the `audit_log` append-only trigger, and the sign-in purge                                                                                                                                                                         | Drop table and trigger               |
-| `0015_publish`          | Publish, page publish, unpublish, archive, restore, draft, projection, approval, section-item, site-image, enquiry, audit, retention and expiry functions and triggers; views, including `staff_account` and `published_settings_hours`; regulation 63 gates (the FAQ 5–8 rule is a CMS warning, not a gate) | Drop functions, triggers and views   |
+| `0015_publish`          | Publish, page publish, unpublish (public wrapper and internal helper), archive, restore, delete, draft, projection, approval, section-item, site-image, enquiry, audit, retention and expiry functions and triggers; views, including `staff_account` and `published_settings_hours`; regulation 63 gates (the FAQ 5–8 rule is a CMS warning, not a gate) | Drop functions, triggers and views   |
 | `0016_rls_storage`      | Roles, grants (including schema usage for `api_runner` and `scheduler_runner`), RLS (including the working-hour and sign-in tables), three buckets and the public read policy                                                                                                                                               | Revoke and drop policies (dev only)  |
 | `0017_jobs`             | `pg_cron` schedules, including the two London-midnight expiry runs and the sign-in purge                                                                                                                                       | Unschedule jobs                      |
 
@@ -4495,6 +4626,16 @@ Rules for every migration:
 - `publish_page` publishes ten section versions and the page in one transaction; a
   section left in draft keeps its previous published version, and a page whose section
   has never published is refused.
+- `unpublish_content` deletes the pointer and creates a draft for the item, reusing an
+  existing open draft; a landing-page unpublish leaves drafts for the page and its ten
+  sections (created or reused), so `publish_page` can publish the page again. A plain
+  unpublish on an item with no pointer creates no draft.
+- `archive_content` creates no draft; a restored item is `unpublished`, or the open draft
+  that survived the archive, until an Admin publishes it. `delete_content` removes a
+  never-published item with one `delete` audit row and no revalidation row, and refuses
+  an item of one of the three fixed kinds, a published or approved item, and an item
+  referenced by a section version or a service (or its version), each with a distinct
+  message.
 - `publish_content` refuses a landing page; a draft copies the section row, its
   paragraphs, technologies, address lines and legal block children, plus its references;
   a published section version cannot gain a reference or edit its copy.
@@ -4537,6 +4678,9 @@ Rules for every migration:
   a 23:30 UTC publish in BST returns the next UK day.
 - Archive unpublishes a live item and queues its page tag; restore clears the flags and
   publishes nothing.
+- Unpublish deletes the pointer and creates a draft; a landing-page unpublish leaves
+  eleven drafts (created or reused). A permanent delete removes only a never-published
+  item and writes one `delete` audit row.
 - The expiry job queues a page whose approval expired yesterday; a second schedule may
   queue it again, a duplicate that the 24-hour cache ceiling makes harmless.
 - `purge_enquiry_ip_hashes` nulls only the old hash, `purge_email_outbox` deletes only
@@ -4695,8 +4839,9 @@ unchanged.
 
 ## Validation performed
 
-The SQL in this document was applied to a scratch PostgreSQL 18 database on 27 November
-2026, with minimal `auth.users`, `auth.mfa_factors` and `storage` stubs. The run:
+The SQL in this document as it stood before decisions 69 and 70 was applied to a scratch
+PostgreSQL 18 database on 27 November 2026, with minimal `auth.users`, `auth.mfa_factors`
+and `storage` stubs. The run:
 
 - read `mfa_status` and `last_sign_in_at` from `staff_account` and refused to demote the
   last active Admin;
@@ -4731,18 +4876,49 @@ The SQL in this document was applied to a scratch PostgreSQL 18 database on 27 N
 - denied `anon` and `authenticated` a read, and allowed `api_runner` to read
   `published_content`, `staff_account` and `version_media`.
 
-The test script is not committed yet. It lives beside the scratch cluster and should
-become the backend test suite when `api/` is scaffolded.
+The unpublish split (`_unpublish_internal` and the `unpublish_content` wrapper),
+`archive_content`, `restore_content` and `delete_content` were applied to a fresh scratch
+PostgreSQL 18.7 database on 27 November 2026, with the runbook's auth/storage stubs and block
+56 (`cron.schedule`) skipped because the image has no `pg_cron`; 46 base tables were
+created. The run:
+
+- published the page and ten sections through `publish_page`, unpublished it, and saw
+  the 11 live pointers removed, 11 drafts left and one revalidation row tagged `page:/`
+  and `routes`; then republished it from those drafts;
+- unpublished a service, removing the pointer, keeping the published version, leaving one
+  draft and writing the audit row; unpublished it again, which wrote a second audit row
+  without a new draft; and reused an existing open draft instead of creating another,
+  removing the pointer and writing a third audit row;
+- archived a service and the page with no draft created, `archived_at` and `archived_by`
+  set, the pointer gone, one audit row and one `page:/` cache tag each; restored both,
+  clearing the flags and leaving nothing live, no new draft, no pointer and no new cache
+  tag;
+- deleted a never-published service, removing the row and its versions, writing one
+  audit row and no revalidation row; deleted a legal-page draft twice, reusing the path
+  in between;
+- refused a delete of a published item, each of the three fixed kinds (landing page,
+  section, settings), an item with approval evidence, an item referenced by a section
+  version, and a group with a service version, each with its named message and the row
+  still present.
+
+The commands and expected output are in `docs/runbooks/database-validation.md`; the
+fixture and assertions are in `docs/runbooks/database-validation.sql`.
+
+The broader fixture behind the first list is still uncommitted. The unpublish, archive
+and delete harness is committed in `docs/runbooks/`, so that half can be re-run before
+`api/` is scaffolded.
 
 The Supabase `storage` schema, the `pg_cron` schedules and the real `auth.users` are
 stubbed or skipped. They need a Supabase local or staging run before the first deploy.
 The FastAPI side still has to implement the object copy that promotes a staged image;
 this run exercises the database half only.
 
-The 27 November gap-closure run regenerated `schema.sql` from this document (56
-blocks, the `pg_cron` block skipped as before), applied it with `stubs.sql` to fresh
-scratch databases, and ran both suites to a pass. `test-cols.sql` ends `ALL TESTS
-PASSED`, covering the product scope exclusion (no `product` enum value, table or
+The 27 November gap-closure run regenerated `schema.sql` from the document as it then
+stood, before decisions 69 and 70 (56 blocks then, the `pg_cron` block skipped as
+before), applied it with `stubs.sql` to fresh scratch databases, and ran both suites to a
+pass. The document now has 57 blocks; the unpublish split and `delete_content` are
+covered by the later run above, not by that gap-closure run. `test-cols.sql` ends `ALL
+TESTS PASSED`, covering the product scope exclusion (no `product` enum value, table or
 view, and an approval with a `product` subject refused), the legal identity gate (a
 null `legal_name`, `country` and
 `contact_email` each refused, all three publishing) and the regulation 63 gate
@@ -4779,9 +4955,9 @@ does not imply full PRD coverage for them and no tables are added for them:
 
 ## Open questions
 
-1. **Data layer confirmation.** Confirmed in task 0001: SQLAlchemy 2.0 sync + Alembic +
-   psycopg 3 on Python 3.12. Async SQLAlchemy with asyncpg was rejected because it changes
-   the FastAPI endpoint style and session lifetime without changing the schema.
+1. **Data layer confirmation.** SQLAlchemy 2.0 sync + Alembic + psycopg 3 is the
+   proposal. The alternative is async SQLAlchemy with asyncpg; it changes the FastAPI
+   endpoint style, not the schema. Confirm before scaffolding.
 2. **`auth.users` in CI.** The FK is right for Supabase. The test harness must create
    a minimal `auth.users` or run Supabase local; a plain Postgres container does not
    have the schema.

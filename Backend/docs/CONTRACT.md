@@ -112,15 +112,19 @@ POST /api/revalidate          (Next, shared secret in a header)
 | settings published                                    | `settings`, `page:/`, and every legal page tag from `/routes`            |
 | a service or group published                          | `page:/` — the landing page projects it                                     |
 | a project, figure or quote published                  | `page:/`                                                                     |
-| a page unpublished or archived (deleted in the admin) | `page:<path>`, `routes`; a service or group uses `page:/`                |
+| a page unpublished or archived | `page:<path>`, `routes`; a service or group uses `page:/`                |
 | an archive restored                                   | none until it is republished; a restore returns it to the CMS, not to the site |
 | an approval withdrawn or revoked                      | `page:/` in Phase 1                                                          |
 | an approval that expired at midnight                  | the tags of every page holding the item                                        |
 
-Archive is the Phase 1 delete: it unpublishes first, then marks the item archived, in
-one transaction, so the public change is an unpublish. Restore clears the archive flags
-and nothing else; the item is not live until an Admin republishes it, and that publish
-writes its own row.
+Unpublish deletes the publication pointer and creates a draft copy in the same
+transaction (decision 69), so the item returns to Draft while the published version is
+untouched. Archive is the normal delete: it unpublishes first, then marks the item
+archived, in one transaction, so the public change is an unpublish. A permanent delete
+exists only for an item that was never published, carries no approval, is not one of the
+three fixed kinds and is not referenced (decision 70).
+Restore clears the archive flags and nothing else; the item is not live until an Admin
+republishes it, and that publish writes its own row.
 
 The worker retries with backoff, so a Next outage delays the page rather than failing
 the publish, and the audit records the pending row until it clears. A publish is done
@@ -1069,6 +1073,8 @@ stays on the sending subdomain.
 | 66 | Every entity and main field in PRD §8 has a named home                                                     | The PRD is mentor-approved; a field is implemented with its PRD meaning or recorded as deferred, never renamed or folded into a neighbour                                                                              |
 | 67 | Products are out of scope by explicit decision | SV-2, PRD §7: no product kind, table, view, slot or approval subject is modelled; reintroduction needs a new `content_kind`, a typed table, a PRD/D-3 decision and a migration. No public Phase 1 payload changes: no product route or page was ever exposed |
 | 68 | Preview stays authenticated-only; no token table | Every approver is staff under MFA with a 12-hour idle expiry; SE-12's private, no-store and noindex are met by the staff session, not by a shareable bearer                                                                                                           |
+| 69 | Unpublish returns every item whose pointer it removes to Draft | PRD §7 (page 11) says unpublish "returns it to Draft"; `PRD_SCHEMA_DRAFT.md:93` already creates a draft copy, and pointer deletion alone leaves the landing page unrepublishable because `publish_page` needs every section live and `_publish_version` accepts only draft or in-review versions. Rejected alternative: showing "unpublished" and creating the draft on Edit — the landing page would need ten section drafts recreated by hand before it could republish |
+| 70 | Archive is the normal delete; a permanent delete exists only for an item that was never published, has no approval, is not one of the three fixed kinds that are never created from the UI (the landing page, its sections and settings) and is not referenced; a legal page is creatable, so a never-published legal draft may be deleted | PRD §7 (page 9) grants an Admin "Delete content"; AD-7 requires an audit log of sign-ins, publish and unpublish, role changes and deletions (page 11); hard-deleting published content would contradict "previous versions are kept" (page 11) and destroy approval evidence. Rejected alternatives: archive only — the capability is unfulfilled; or a universal hard delete — it destroys history and approval evidence |
 
 ## Deliberately absent
 
