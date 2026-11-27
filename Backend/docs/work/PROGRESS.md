@@ -383,6 +383,49 @@ Decisions:
 Remaining: none.
 Next: M3 — media.
 
+---
+
+## Task: TASK-0003 — media table and immutability
+
+Status: done
+Date: 2026-11-27
+Milestone: M3
+
+Changed:
+- `migrations/versions/0003_media.py`; `app/models.py`; `tests/test_media_schema.py`; `tests/test_staff_schema.py` (cleanup now truncates media); `README.md`; `DATABASE.md` §Media (new constraints, alt bound, recorded boundaries); work file.
+
+Evidence:
+- `uv run pytest -q` → 114 passed; `--import-mode=importlib` → 114 passed; ruff and mypy green.
+- `alembic check` clean at `0003_media`; `downgrade base` → `upgrade head` clean.
+- 17 documented constraints plus the named FK; trigger `media_immutable BEFORE UPDATE`.
+- Mutation: dropping the trigger fails 16 tests; changing a constraint expression fails the catalog test after the strengthening.
+
+Decisions:
+- A soft-deleted row cannot be promoted, and a promotion cannot set `deleted_at`.
+- `deleted_at` is frozen once set; both timestamps must be at or after `uploaded_at`.
+- `alt` is 1–120 when present, so an empty string is not an alternative to `null`; only evidence may omit it.
+- A direct public insert and a traversal-like `object_path` are not blocked by the database; M17 builds the path and the later reference checks govern deletion. Recorded, not hidden.
+
+Remaining: none. Deferred Lows: catalog normalisation is not semantic, timestamp checks are tested on insert only, empty alt in evidence is untested.
+Next: M4 — content spine.
+
+Canonical: [0003-media.md](0003-media.md)
+
+---
+
+## Review: TASK-0003, rounds 1–2
+
+Reviewer: one `reviewer` subagent
+Date: 2026-11-27
+Scope: `bb7bbd3..018111d`.
+Outcome: **accepted — no open Critical or High.**
+
+Round 1: no Critical/High; three Medium — soft-deleted promotion, timestamp rewriting and ordering, silent constraint-expression drift. Fixed in `018111d`.
+Round 2: the three Mediums closed with probes; four Low deferred with reasons.
+
+Limits: Supabase, storage, RLS and the M17 promotion path were not run; the database accepts a public direct insert and `../` in `object_path`, by recorded decision.
+
+
 
 
 

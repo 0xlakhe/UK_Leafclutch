@@ -1,7 +1,7 @@
 ---
 task: 0003
 title: Media table and immutability
-status: in-progress
+status: done
 branch: prabesh
 started: 2026-11-27
 updated: 2026-11-27
@@ -18,17 +18,17 @@ M17.
 
 ## Acceptance criteria
 
-- [ ] `0003_media` creates `media` with every column, default and constraint in
+- [x] `0003_media` creates `media` with every column, default and constraint in
       `DATABASE.md` §Media, including `media_object_unique`, `media_visibility_bucket`,
       `media_promotion`, `media_deleted_after_upload`, `media_promoted_after_upload`,
       `media_object_path`, `media_size` (4 MB), `media_checksum` (32 bytes),
       `media_alt_required`, `media_alt_length` (not empty), `media_types` (PDF only in
       `evidence`) and `media_image_dimensions`.
-- [ ] `prevent_media_mutation()` and the `media_immutable` trigger are copied verbatim,
+- [x] `prevent_media_mutation()` and the `media_immutable` trigger are copied verbatim,
       including every exception message.
-- [ ] Downgrade drops the trigger, the function and the table.
-- [ ] `media` is modelled in `app/models.py`; `alembic check` stays clean.
-- [ ] Database tests cover, each failing if the protection is removed:
+- [x] Downgrade drops the trigger, the function and the table.
+- [x] `media` is modelled in `app/models.py`; `alembic check` stays clean.
+- [x] Database tests cover, each failing if the protection is removed:
       - a `public` row must be in `site-media`; a private row must be `media-staging` or
         `evidence`;
       - `promoted_at` is set exactly when the row is public;
@@ -46,9 +46,9 @@ M17.
         and neither timestamp may precede `uploaded_at`;
       - an empty `alt` is refused outside `evidence`;
       - a structural test pins the trigger and the function body.
-- [ ] `uv run ruff check .`, `uv run mypy app` and `uv run pytest` pass; `alembic check`
+- [x] `uv run ruff check .`, `uv run mypy app` and `uv run pytest` pass; `alembic check`
       is clean; `downgrade base` then `upgrade head` succeeds. Output quoted.
-- [ ] Only `Backend/` changes.
+- [x] Only `Backend/` changes.
 
 ## Non-goals
 
@@ -272,6 +272,41 @@ trigger-drop mutation check (16 failed) was run before the review fixes and is
 **superseded** by the current behavioural tests.
 
 ## Review
+
+Two rounds with one independent reviewer session, plus the fix round. Every Critical, High
+and Medium is closed; four Low findings are deferred with reasons.
+
+Round 1: no Critical or High. Three Medium — a soft-deleted staged row could be promoted;
+`deleted_at` could be rewritten and neither timestamp was checked against `uploaded_at`;
+and changing a constraint expression left the suite green because the catalog test compared
+only names. Six Low. Fixed in `018111d`: the promotion branch refuses a deleted row, the
+deletion is frozen and bounded, `media_deleted_after_upload` and
+`media_promoted_after_upload` were added, the catalog test compares normalised definitions,
+`media_alt_length` requires 1–120, and the enum labels are pinned.
+
+Round 2: the three Mediums are closed, with probes for legitimate promotion, equal
+timestamps, a changed constraint expression and added or renamed enum labels. Four Low
+remain, deferred:
+
+1. The catalog normaliser strips every parenthesis, so a pure regrouping can pass it alone;
+   the behavioural suite caught the current grouping change (28 failures). Recorded rather
+   than made semantic, because the check is a backstop, not the only test.
+2. The two timestamp checks are exercised on insert, not on the promotion or update path;
+   the reviewer verified both update paths manually and they refuse correctly.
+3. `alt=''` in `evidence` is refused by the length check but has no dedicated test; only
+   `null` is the evidence omission.
+4. The normalisation wording in `## Open questions` calls all parentheses decorative; the
+   reviewer showed grouping can matter.
+
+Verified by the orchestrator: 114 tests, `alembic check` clean at `0003_media`, and both new
+constraints present in the migration, the model and the document.
+
+Outcome: **accepted**. No open Critical or High.
+
+## Next
+
+M4 — content spine (revision `0004`): `content_item`, `content_version`,
+`content_publication`, `content_seo` and the immutable-content function.
 
 ## Docs updated
 
