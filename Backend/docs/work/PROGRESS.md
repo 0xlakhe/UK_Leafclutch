@@ -316,4 +316,50 @@ Next: M2 — extensions, enums and `staff`.
 
 Canonical: [PLAN.md](PLAN.md)
 
+---
+
+## Task: TASK-0002 — extensions, enums and staff
+
+Status: done
+Date: 2026-11-27
+Milestone: M2
+
+Changed:
+- `migrations/versions/0001_extensions_enums.py`, `0002_staff.py`; `app/models.py`; `migrations/env.py` (`compare_server_default`, `auth` excluded); `scripts/bootstrap_local.sql`; `tests/conftest.py`, `test_migrations.py`, `test_staff_schema.py`; `README.md`; `DATABASE.md` (guard and downgrade).
+
+Evidence (actual runs, PostgreSQL 18.7):
+- `uv run pytest -q` → 59 passed; `--import-mode=importlib` → 59 passed.
+- `alembic check` → no new operations; `alembic current` → `0002_staff`.
+- `downgrade base` → enums gone, `citext`/`pgcrypto` retained; `upgrade head` → clean.
+- Trigger `staff_lock_writes BEFORE INSERT OR DELETE OR UPDATE ... FOR EACH STATEMENT`; `enforce_last_admin` counts through `for update`.
+- Mutation: with `staff_lock_writes` dropped, the two-delete test fails with `40P01`; with it, one `P0001`/`40001` and one active Admin.
+
+Decisions:
+- The last-Admin invariant is enforced at `READ COMMITTED`, `REPEATABLE READ` and `SERIALIZABLE`. The advisory lock sits in a statement trigger so it precedes the statement's own row locks; the count is a locking read so stricter isolation reports `40001` instead of allowing the removal.
+- A lock held by the caller before the statement cannot be reordered by a trigger; staff services must take the advisory lock before their first staff row lock or retry `40P01`. Recorded as an M15 obligation.
+- The `0001` downgrade drops enums only; extensions are shared objects and stay.
+- `DATABASE.md` in this checkout carries the fixed guard; the design workspace still has the unguarded body until it is patched.
+
+Remaining: none. Deferred Lows: `TRUNCATE` bypass, catalog-level CHECK/enum drift, manual round trip.
+Next: M3 — media.
+
+Canonical: [0002-extensions-enums-staff.md](0002-extensions-enums-staff.md)
+
+---
+
+## Review: TASK-0002, rounds 1–4
+
+Reviewer: one `reviewer` subagent across all rounds
+Date: 2026-11-27
+Scope: `3c6f46f..0c24e23`.
+Outcome: **accepted — no open Critical or High.**
+
+Round 1: High (guard not concurrency-safe; two deletes leave zero), 2 Medium, 8 Low — fixed in `64cf3b2`.
+Round 2: High (advisory lock fails at `REPEATABLE READ`/`SERIALIZABLE`), Medium (new `40P01` deadlock), Medium (stale docs) — fixed in `2be94ce`.
+Round 3: no High; Medium (trigger misses `INSERT` and earlier locks), Medium (deadlock test passes without the trigger) — fixed in `0c24e23`.
+Round 4: no Critical, High or Medium; mutation proves the new test fails with `40P01` when the trigger is dropped.
+
+Limits: Supabase was not run; the design workspace copy of `DATABASE.md` still differs; no admin service exists to exercise `40001` handling.
+
+
 

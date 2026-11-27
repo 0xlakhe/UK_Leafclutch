@@ -1,7 +1,7 @@
 ---
 task: 0002
 title: Extensions, enums and staff
-status: in-progress
+status: done
 branch: prabesh
 started: 2026-11-27
 updated: 2026-11-27
@@ -19,34 +19,34 @@ functions yet.
 
 ## Acceptance criteria
 
-- [ ] `0001_extensions_enums` creates `pgcrypto`, `citext` and every enum in
+- [x] `0001_extensions_enums` creates `pgcrypto`, `citext` and every enum in
       `DATABASE.md` §Enums verbatim (`staff_role`, `content_kind`, `page_section_key`,
       `version_status`, `approval_scope`, `media_visibility`, `media_role`,
       `enquiry_status`, `faq_status`, `legal_block_kind`, `email_kind`, `email_status`,
       `revalidation_status`). Downgrade drops them.
-- [ ] `0002_staff` creates `staff`, `staff_email_unique`, `staff_display_name_length`,
+- [x] `0002_staff` creates `staff`, `staff_email_unique`, `staff_display_name_length`,
       `staff_active_role_idx`, `set_updated_at()`, `staff_set_updated_at`,
       `enforce_last_admin()` and `staff_last_admin` exactly as `DATABASE.md` defines them.
       Downgrade removes them.
-- [ ] `content_version_set_updated_at` and `enquiry_set_updated_at` are **not** created
+- [x] `content_version_set_updated_at` and `enquiry_set_updated_at` are **not** created
       in 0002: those tables do not exist yet and their revisions attach them.
-- [ ] The `auth.users` foreign key is satisfied by a documented local bootstrap, not by a
+- [x] The `auth.users` foreign key is satisfied by a documented local bootstrap, not by a
       migration. `DATABASE.md` open question 2 leaves this to the harness: a plain
       PostgreSQL has no `auth` schema. Supabase already has the real table, so the
       bootstrap must be a no-op there and must not be part of the migration path.
-- [ ] From a fresh bootstrapped database: `alembic upgrade head` and `alembic downgrade
+- [x] From a fresh bootstrapped database: `alembic upgrade head` and `alembic downgrade
       base` both succeed, and `alembic check` reports no difference. The `auth` schema is
       excluded from autogenerate, or modelled so it does not appear as drift.
-- [ ] The `staff` table and its enum are represented as SQLAlchemy models in
+- [x] The `staff` table and its enum are represented as SQLAlchemy models in
       `app/models.py`, so `alembic check` is meaningful from this revision onwards.
-- [ ] Database-backed tests run against `leafclutch_test` with the target guard from task
+- [x] Database-backed tests run against `leafclutch_test` with the target guard from task
       0001 intact, covering: the last active Admin cannot be deleted; the last active
       Admin cannot be demoted or deactivated; a second active Admin makes both allowed;
       `staff_email_unique` refuses a duplicate; `staff_display_name_length` refuses empty
       and 101 characters; `set_updated_at` moves `updated_at` on update.
-- [ ] `uv run ruff check .`, `uv run mypy app` and `uv run pytest` pass, and the output is
+- [x] `uv run ruff check .`, `uv run mypy app` and `uv run pytest` pass, and the output is
       quoted in `## Tests`.
-- [ ] Only `Backend/` changes; no `Frontend/`, `Admin/`, or application endpoint.
+- [x] Only `Backend/` changes; no `Frontend/`, `Admin/`, or application endpoint.
 
 ## Non-goals
 
@@ -800,6 +800,38 @@ alters `staff.active`'s default inside the test transaction to prove that a chan
 default is reported, then rolls it back.
 
 ## Review
+
+Four rounds with one independent reviewer session. Every Critical, High and Medium is
+closed; the deferred Lows are listed under `## Remaining` with reasons.
+
+Round 1 (`3c6f46f..8fe79b1`): one High — the last-Admin guard was not concurrency-safe;
+two simultaneous deletes each saw the other Admin and both committed, leaving zero. Two
+Medium — the 0001 downgrade dropped shared extensions, and `alembic check` ignored server
+defaults. Eight Low. Fixed in `64cf3b2`.
+
+Round 2 (`8fe79b1..64cf3b2`): one High — the advisory lock, taken inside a row trigger,
+does not hold at `REPEATABLE READ` or `SERIALIZABLE`; two removals still left zero
+Admins. One Medium — the lock introduced a `40P01` deadlock against row locks. Another
+Medium — `DATABASE.md` and the migration docstring were stale. Fixed in `2be94ce`: the
+lock moved to a statement trigger and the count became a locking read.
+
+Round 3 (`64cf3b2..2be94ce`): no High; the invariant held at all three isolation levels.
+Two Medium — the statement trigger missed `INSERT` and locks taken before the statement,
+and the deadlock test passed with the trigger removed. Fixed in `0c24e23`.
+
+Round 4 (`2be94ce..0c24e23`): no Critical, High or Medium. Mutation proof: dropping
+`staff_lock_writes` in a scratch copy makes the new two-delete test fail with `40P01`;
+with the trigger it serialises to one `P0001`/`40001` and one active Admin.
+
+Verified by the orchestrator after round 4: 59 tests in default and importlib mode; the
+installed statement trigger covers `INSERT OR UPDATE OR DELETE`; the two-delete test
+passed 5/5 runs; `alembic check` clean at `0002_staff`.
+
+Outcome: **accepted**. No open Critical or High.
+
+## Next
+
+M3 — media (revision `0003`), including the immutability trigger.
 
 ## Docs updated
 
