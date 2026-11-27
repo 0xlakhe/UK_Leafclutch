@@ -24,8 +24,8 @@ ONE_PROMOTION = "promotion moves one staged row to site-media"
 VISIBILITY_ONLY_ON_PROMOTION = "media visibility only changes on promotion"
 
 # The fifteen checks, the unique pair and the foreign key as PostgreSQL renders them, plus
-# the primary key. The definitions are normalised by ``normalise_constraint`` before the
-# comparison, so PostgreSQL's whitespace and decorative parentheses do not matter.
+# the primary key. ``normalise_constraint`` folds case and collapses whitespace only: the
+# parentheses are kept because grouping changes the rule, and a pure regrouping must fail.
 EXPECTED_CONSTRAINTS: dict[str, tuple[str, str]] = {
     "media_pkey": ("p", "PRIMARY KEY (id)"),
     "media_object_unique": ("u", "UNIQUE (bucket, object_path)"),
@@ -138,8 +138,8 @@ EXPECTED_ENUMS: dict[str, list[str]] = {
 
 
 def normalise_constraint(definition: str) -> str:
-    """Lower-case, drop PostgreSQL's decorative parentheses and collapse whitespace."""
-    return " ".join(definition.lower().replace("(", "").replace(")", "").split())
+    """Lower-case and collapse whitespace; PostgreSQL's parentheses stay significant."""
+    return " ".join(definition.lower().split())
 
 
 def add_uploader(db: Connection) -> uuid.UUID:
@@ -344,6 +344,24 @@ def test_an_empty_alt_is_refused_outside_evidence(db: Connection) -> None:
     with pytest.raises(IntegrityError, match="media_alt_length"):
         with db.begin_nested():
             add_media(db, uploaded_by, alt="")
+
+
+def test_an_empty_alt_is_refused_in_evidence(db: Connection) -> None:
+    uploaded_by = add_uploader(db)
+    # `null` is the evidence omission (proved in the happy path above); `''` is not.
+    add_evidence_pdf(db, uploaded_by)
+
+    with pytest.raises(IntegrityError, match="media_alt_length"):
+        with db.begin_nested():
+            add_media(
+                db,
+                uploaded_by,
+                bucket="evidence",
+                mime_type="application/pdf",
+                width=None,
+                height=None,
+                alt="",
+            )
 
 
 def test_pdf_is_accepted_in_evidence_and_refused_elsewhere(db: Connection) -> None:
@@ -705,6 +723,46 @@ def test_promoted_at_cannot_precede_uploaded_at(db: Connection) -> None:
             )
 
 
+def test_deleted_at_cannot_precede_uploaded_at_on_a_public_row(db: Connection) -> None:
+    uploaded_by = add_uploader(db)
+    uploaded_at = datetime(2026, 1, 2, tzinfo=UTC)
+    media_id = add_media(db, uploaded_by, uploaded_at=uploaded_at)
+    promote(db, media_id)
+
+    with pytest.raises(IntegrityError, match="media_deleted_after_upload"):
+        with db.begin_nested():
+            db.execute(
+                sa.update(media)
+                .where(media.c.id == media_id)
+                .values(deleted_at=uploaded_at - timedelta(days=1))
+            )
+
+    assert select_media(db, media_id).deleted_at is None
+
+
+def test_promoted_at_cannot_precede_uploaded_at_on_promotion(db: Connection) -> None:
+    uploaded_by = add_uploader(db)
+    uploaded_at = datetime(2026, 1, 2, tzinfo=UTC)
+    media_id = add_media(db, uploaded_by, uploaded_at=uploaded_at)
+
+    with pytest.raises(IntegrityError, match="media_promoted_after_upload"):
+        with db.begin_nested():
+            db.execute(
+                sa.update(media)
+                .where(media.c.id == media_id)
+                .values(
+                    visibility="public",
+                    bucket="site-media",
+                    promoted_at=uploaded_at - timedelta(days=1),
+                )
+            )
+
+    row = select_media(db, media_id)
+    assert row.visibility == "private"
+    assert row.bucket == "media-staging"
+    assert row.promoted_at is None
+
+
 def test_equal_timestamps_are_accepted(db: Connection) -> None:
     uploaded_by = add_uploader(db)
     uploaded_at = datetime(2026, 1, 2, tzinfo=UTC)
@@ -720,10 +778,33 @@ def test_equal_timestamps_are_accepted(db: Connection) -> None:
     )
 
 
+def test_equal_timestamps_are_accepted_on_update_and_promotion(db: Connection) -> None:
+    uploaded_by = add_uploader(db)
+    uploaded_at = datetime(2026, 1, 2, tzinfo=UTC)
+
+    public_id = add_media(db, uploaded_by, uploaded_at=uploaded_at)
+    promote(db, public_id)
+    db.execute(
+        sa.update(media).where(media.c.id == public_id).values(deleted_at=uploaded_at)
+    )
+    assert select_media(db, public_id).deleted_at == uploaded_at
+
+    staged_id = add_media(db, uploaded_by, uploaded_at=uploaded_at)
+    db.execute(
+        sa.update(media)
+        .where(media.c.id == staged_id)
+        .values(visibility="public", bucket="site-media", promoted_at=uploaded_at)
+    )
+    row = select_media(db, staged_id)
+    assert row.visibility == "public"
+    assert row.promoted_at == uploaded_at
+
+
 def test_every_documented_constraint_matches_its_definition(db: Connection) -> None:
     # Alembic 1.20 does not compare CHECK constraints (task 0002's `alembic check` note),
-    # so the installed definitions are compared here instead. Whitespace and the
-    # parentheses PostgreSQL adds are normalised; a changed bound or operator still fails.
+    # so the installed definitions are compared here instead. Case and whitespace are
+    # normalised; parentheses and operators are compared exactly, so a changed bound, a
+    # changed operator or a pure regrouping fails.
     installed = {
         name: (kind, normalise_constraint(definition))
         for name, kind, definition in db.execute(
