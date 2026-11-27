@@ -10,7 +10,7 @@ reviewed and done. See `AGENTS.md` → "Documentation — a work file per task".
 | 0003 | Media table and immutability | done | 2026-11-27 |
 | 0004 | Content spine | done | 2026-11-27 |
 | 0005 | Sync reviewed CONTRACT and ADMIN from the design workspace | done | 2026-11-27 |
-| 0006 | Archive a landing page whose sections are still live | in-progress | 2026-11-27 |
+| 0006 | Archive a landing page whose sections are still live | done | 2026-11-27 |
 | 0007 | Landing page sections | in-progress | 2026-11-27 |
 
 `PROGRESS.md` is the chronological reading copy in the EventBook format; the numbered

@@ -1,7 +1,7 @@
 ---
 task: 0006
 title: Archive a landing page whose sections are still live
-status: in-progress
+status: done
 branch: prabesh
 started: 2026-11-27
 updated: 2026-11-27
@@ -24,27 +24,27 @@ authoritative SQL before it is implemented, not the database.
 
 ## Acceptance criteria
 
-- [ ] In `DATABASE.md`, `archive_content`'s condition is true when the item has its own
+- [x] In `DATABASE.md`, `archive_content`'s condition is true when the item has its own
       pointer **or** the item is a `landing_page` and any `page_section` row for it has a
       pointer. The call remains `_unpublish_internal(p_item_id, p_actor, false)`.
-- [ ] The rest of the body is unchanged: the locking read, both existing refusals, the
+- [x] The rest of the body is unchanged: the locking read, both existing refusals, the
       single `archive` audit row, and the section archive update.
-- [ ] The two `DATABASE.md` prose passages — the delete-paths paragraph and the archive
+- [x] The two `DATABASE.md` prose passages — the delete-paths paragraph and the archive
       guard paragraph — say that archiving a landing page unpublishes a live section even
       when the page itself is not live.
-- [ ] `ADMIN.md`'s **Archive** bullet says the same in one clause, without changing any
+- [x] `ADMIN.md`'s **Archive** bullet says the same in one clause, without changing any
       other rule.
-- [ ] No table, constraint, index, other function or migration changes; no application
+- [x] No table, constraint, index, other function or migration changes; no application
       code changes, and the runbook harness is the only test change.
-- [ ] `uv run ruff check .`, `uv run mypy app`, `uv run pytest -q` and
+- [x] `uv run ruff check .`, `uv run mypy app`, `uv run pytest -q` and
       `uv run alembic check` are unchanged and quoted; `git diff --check` is silent.
-- [ ] The runbook harness (`docs/runbooks/database-validation.sql`) gains a phase that
+- [x] The runbook harness (`docs/runbooks/database-validation.sql`) gains a phase that
       proves the fix: publish only the hero so the page pointer is absent and the hero
       pointer present, archive the page, and assert 11 archived, no pointers, one page
       `unpublish` audit row, one `{page:/,routes}` revalidation row and no new draft. The phase
       fails against the pre-fix body from `208188a^` and passes against the corrected one;
       both runs are quoted.
-- [ ] Only `Backend/` changes.
+- [x] Only `Backend/` changes.
 
 ## Non-goals
 
@@ -242,6 +242,34 @@ Final application checks before the commit:
 
 ## Review
 
+Two rounds with one independent reviewer session; the second round re-ran the harness on
+fresh PostgreSQL 18 databases.
+
+Round 1: one High — the fix had no regression test, and the work file falsely claimed the
+documented body could not be exercised before M11, when the runbook harness applies every
+`DATABASE.md` SQL block and calls `archive_content`. One Medium — the audit and
+revalidation wording read as if the `unpublish` row named the live section, while it names
+the archived page. Three Low: the ADMIN archive bullet was too narrow, the migration-test
+list omitted the case, and a concurrent section publish can still trip the guard.
+
+Fixed in `c48cb81` and `725ec54`. The harness now publishes only the hero, asserts the page
+pointer is absent and the hero pointer present, archives the page and asserts 11 archived,
+no pointers, one new page-named `unpublish` row, one new `archive` row, one
+`{page:/, routes}` revalidation row and no new draft. The reviewer reproduced both
+directions: the pre-fix body fails the phase with
+`archive removes the publication pointer first`; the corrected body passes with exit 0.
+The audit wording, the migration-test list and the concurrency caveat are in `DATABASE.md`
+and `ADMIN.md`.
+
+Round 2: the High and the Medium are closed; the Lows are fixed or recorded. Two accuracy
+items from the recheck — "no draft" where the assertion proves "no new draft", and the
+work file's remaining non-goals claim — are fixed.
+
+Verified by the orchestrator: 210 tests, ruff, mypy, `alembic check` clean at
+`0004_content_core`, and the harness PASS line quoted in the work file.
+
+Outcome: **accepted**. No open Critical, High or Medium.
+
 ## Docs updated
 
 - `Backend/docs/DATABASE.md` — documented `archive_content` condition and the two prose
@@ -271,6 +299,8 @@ Final application checks before the commit:
 
 ## Next
 
+M5 — task 0007, revision `0005_page_sections`: the landing page section tables, split into
+two green commits; part one builds `page_section` and `section_version`.
 ## Open questions
 
 ## Not verified

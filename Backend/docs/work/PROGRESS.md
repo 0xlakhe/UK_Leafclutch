@@ -489,6 +489,32 @@ Decisions:
 Remaining: none.
 Next: M5.
 
+---
+
+## Task: TASK-0006 — archive a landing page whose sections are still live
+
+Status: done
+Date: 2026-11-27
+Milestone: M4 follow-up
+
+Changed:
+- `DATABASE.md` `archive_content` condition, archive and revalidation prose, migration-test list; `ADMIN.md` archive and audit wording; `runbooks/database-validation.sql` (new phase) and `.md` (recorded run); work file and index row.
+
+Evidence:
+- The harness fails against the pre-fix body with `archive removes the publication pointer first` and passes against the corrected body: 11 archived, one page-named `unpublish` row, one `{page:/,routes}` revalidation, no new draft. 18 PASS notices, exit 0.
+- `uv run pytest -q` → 210 passed; ruff and mypy green; `alembic check` clean at `0004_content_core`.
+- Commits `208188a`, `c48cb81`, `725ec54`.
+
+Decisions:
+- Widened the call condition, not `_unpublish_internal`: it already deletes every section pointer; only the call was wrong.
+- The `unpublish` audit row names the archived page, not the live section; documented in `DATABASE.md` and `ADMIN.md`.
+- A concurrent section publish can still trip the guard; the rollback is clean and the archive is safe to retry.
+
+Remaining: M11 installs `archive_content` in the application database and repeats the case; the design workspace needs the `DATABASE.md` and `ADMIN.md` sync.
+Next: M5 — landing page sections.
+
+Canonical: [0006-archive-content-pointers.md](0006-archive-content-pointers.md)
+
 
 
 

@@ -108,8 +108,8 @@ M11 and M12 are the hard ones. Budget for them; do not merge them into one miles
 M11 carries one requirement discovered while reviewing M4: `archive_content` must unpublish a
 landing page's **section** pointers even when the page itself has no pointer. Otherwise the
 M4 `content_item_archive_guard` refuses the section update and the whole archive rolls back.
-The guard is right; the M11 function must delete every pointer first. Add a test with the
-page pointer absent and one section pointer present.
+The guard is right. Task 0006 corrected the body in `DATABASE.md`, so M11 implements it
+verbatim and adds a test with the page pointer absent and one section pointer present.
 
 ## Phase C — API
 
