@@ -56,12 +56,15 @@ The container creates the `leafclutch` database and, on first initialisation, th
 `leafclutch_test` database used by the test suite. Both use the local-only
 `leafclutch`/`leafclutch` credentials from `compose.yaml`.
 
+The Compose host port is configurable. `POSTGRES_PORT` defaults to 5432; when that port is
+already in use, set it in `.env` to a free port (5434 in this checkout) and change the port
+in `DATABASE_URL` to match. The container always listens on 5432 internally.
+
 Alembic reads the URL from application settings (`.env` or the environment), never from
 `alembic.ini`:
 
 ```bash
-DATABASE_URL=postgresql+psycopg://leafclutch:leafclutch@localhost:5432/leafclutch \
-  uv run alembic current
+uv run alembic current
 ```
 
 Create and apply migrations:

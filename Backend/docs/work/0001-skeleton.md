@@ -63,6 +63,13 @@ pydantic-settings.
   port and `.env.example` were left unchanged. `alembic current` therefore reaches the
   wrong server and fails authentication; `alembic upgrade head --sql` (offline) succeeds,
   proving `migrations/env.py` loads the URL from settings.
+- **2026-11-27 — Compose port fix, end to end.** The first attempt could not bind host
+  port 5432 (native PostgreSQL 18). Added `name: leafclutch` and the `POSTGRES_PORT`
+  substitution, documented the override, created the git-ignored local `.env` with 5434,
+  removed the old `backend` project (`docker compose -p backend down -v`: container,
+  network and volume), and started the new project. `docker compose up -d --wait db`
+  reached `Healthy`; `uv run alembic current` exits 0; `psql -lqt` lists `leafclutch` and
+  `leafclutch_test`; `GET /health` returns 200.
 
 ## Decisions made
 
@@ -84,6 +91,13 @@ pydantic-settings.
   package. `uv.lock` is committed.
 - The health response is a Pydantic model with `status: Literal["ok"]`. It is liveness
   only; readiness/database checks are out of scope for M1.
+- The Compose host port is configurable: `POSTGRES_PORT` (default 5432) substitutes into
+  the `db` port mapping, and the project is named `leafclutch` so its containers and
+  volume do not depend on the checkout folder. Reason: host port 5432 is owned by a native
+  PostgreSQL 18 on this machine and 5433 by another project's container, so this checkout
+  uses 5434. `DATABASE_URL` must use the same port; `.env.example` keeps 5432 and
+  documents the pairing, while the local `.env` holds the 5434 override and is never
+  committed.
 
 ## Files changed
 
@@ -114,6 +128,14 @@ Modified:
 - `Backend/README.MD` → `Backend/README.md` (renamed with `git mv`, then filled)
 - `Backend/docs/work/README.md` (index entry, written by the orchestrator)
 
+Follow-up (Compose port fix):
+
+- `Backend/compose.yaml` — project name and `POSTGRES_PORT` substitution
+- `Backend/.env.example` — `POSTGRES_PORT` and its comment
+- `Backend/README.md` — port override paragraph; `alembic current` reads `.env`
+- `Backend/docs/work/0001-skeleton.md` — this record
+- `Backend/.env` — created locally for the 5434 override, git-ignored, not committed
+
 `Backend/.gitignore` already contained the Python ignores and was left as it was.
 
 ## Migrations
@@ -135,9 +157,11 @@ All checks passed!
 $ uv run mypy app
 Success: no issues found in 5 source files
 
-$ uv run pytest -q
-............                                                             [100%]
-12 passed, 1 warning in 0.24s
+$ uv run pytest
+tests/test_config.py .....                                               [ 41%]
+tests/test_db.py ....                                                    [ 75%]
+tests/test_health.py ...                                                 [100%]
+======================== 12 passed, 1 warning in 0.25s =========================
 ```
 
 The warning is the known one:
@@ -156,57 +180,57 @@ from the environment; engine URL; session factory binding; `get_session` using t
 factory on `app.state`; lifespan storing the engine and session factory. Role and
 empty-state tests are not applicable: M1 has no auth, collections or tables.
 
-Database checks:
+Database checks. The local `.env` is git-ignored and not committed; it sets
+`POSTGRES_PORT=5434` because the host's PostgreSQL 18 owns 5432.
 
 ```
-$ docker compose up -d db
-Container backend-db-1 Created
-Container backend-db-1 Starting
-Error response from daemon: ports are not available: exposing port TCP 0.0.0.0:5432 -> 127.0.0.1:0: listen tcp 0.0.0.0:5432: bind: address already in use
-```
+$ docker compose -p backend down -v
+ Container backend-db-1 Removed
+ Network backend_default Removed
+ Volume backend_postgres-data Removed
 
-Diagnosis: host port 5432 is occupied by a native PostgreSQL 18
-(`/Library/PostgreSQL/18/bin/postgres`, user `postgres`); `pg_isready` reports
-`127.0.0.1:5432 - accepting connections` and `nc` succeeds, while the container stays
-`Created` and never starts. The port and `.env.example` were not changed.
+$ docker compose up -d --wait db
+ Container leafclutch-db-1 Created
+ Container leafclutch-db-1 Starting
+ Container leafclutch-db-1 Started
+ Container leafclutch-db-1 Waiting
+ Container leafclutch-db-1 Healthy
 
-```
-$ DATABASE_URL=postgresql+psycopg://leafclutch:leafclutch@localhost:5432/leafclutch uv run alembic current
-...
-psycopg.OperationalError: connection failed: connection to server at "127.0.0.1", port 5432
-failed: FATAL:  password authentication failed for user "leafclutch"
-(Background on this error at: https://sqlalche.me/e/21/e3q8)
-```
+$ docker compose ps
+NAME              IMAGE         COMMAND                  SERVICE   CREATED         STATUS                   PORTS
+leafclutch-db-1   postgres:16   "docker-entrypoint.s…"   db        5 seconds ago   Up 5 seconds (healthy)   0.0.0.0:5434->5432/tcp, [::]:5434->5432/tcp
 
-Alembic does load `migrations/env.py` and the settings URL — it reaches the host's
-server — but that server is not the compose database.
-
-```
-$ DATABASE_URL=postgresql+psycopg://leafclutch:leafclutch@localhost:5432/leafclutch uv run alembic upgrade head --sql
+$ uv run alembic current
 INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
-INFO  [alembic.runtime.migration] Generating static SQL
 INFO  [alembic.runtime.migration] Will assume transactional DDL.
-BEGIN;
+exit=0
 
-COMMIT;
-```
+$ docker compose exec db psql -U leafclutch -lqt
+ leafclutch      | leafclutch | UTF8     | libc            | en_US.utf8 | en_US.utf8 |            |           |
+ leafclutch_test | leafclutch | UTF8     | libc            | en_US.utf8 | en_US.utf8 |            |           |
+ postgres        | leafclutch | UTF8     | libc            | en_US.utf8 | en_US.utf8 |            |           |
+ template0       | leafclutch | UTF8     | libc            | en_US.utf8 | en_US.utf8 | =c/leafclutch            +
+                 |            |          |                 |            |            |            |           | leafclutch=CTc/leafclutch
+ template1       | leafclutch | UTF8     | libc            | en_US.utf8 | en_US.utf8 | =c/leafclutch            +
+                 |            |          |                 |            |            |            |           | leafclutch=CTc/leafclutch
 
-The offline path exercises `env.py` and the URL wiring without a connection.
-
-```
-$ DATABASE_URL=postgresql+psycopg://leafclutch:leafclutch@localhost:5432/leafclutch uv run uvicorn app.main:app --port 8000
+$ uv run uvicorn app.main:app --port 8000
 GET /health -> 200 {"status":"ok"}
 INFO:     Application startup complete.
-INFO:     127.0.0.1:52651 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53036 - "GET /health HTTP/1.1" 200 OK
 INFO:     Application shutdown complete.
 ```
+
+The initdb script ran: `leafclutch_test` exists alongside the `leafclutch` database
+created by `POSTGRES_DB`. Alembic exits 0 with no revision applied and no error.
 
 ## Review
 
 ## Docs updated
 
-- `Backend/README.md`: setup, run, checks, database, layout and documentation table;
-  renamed from the empty `Backend/README.MD` with `git mv`.
+- `Backend/README.md`: setup, run, checks, database (including the configurable host
+  port), layout and documentation table; renamed from the empty `Backend/README.MD` with
+  `git mv`.
 - `Backend/docs/work/0001-skeleton.md`: this record.
 - `Backend/docs/work/README.md`: task index entry (orchestrator).
 - No `DATABASE.md`, `CONTRACT.md` or `ADMIN.md` change: M1 adds no table, payload, role or
@@ -215,11 +239,9 @@ INFO:     Application shutdown complete.
 
 ## Open questions
 
-- Host port 5432 is occupied by a native PostgreSQL 18. The compose service cannot bind
-  and `alembic current` authenticates against the wrong server. Possible resolutions are
-  to stop that server, move the compose host port (which also changes `.env.example`), or
-  use the native server. The brief forbids changing the port here, so this needs an
-  orchestrator decision.
+- `tests/conftest.py` still builds the test URL with host port 5432. M1 opens no
+  connection, so the suite is unaffected, but the first database-backed test must take the
+  port from the local override (`POSTGRES_PORT`/`.env`) rather than hard-coding 5432.
 - `DATABASE.md` "Open questions" item 1 still says "Confirm before scaffolding". This task
   settles it as sync SQLAlchemy 2.0 + psycopg 3 on Python 3.12, but the source document
   was left untouched because the brief lists the expected files and says nothing else.
@@ -228,10 +250,10 @@ INFO:     Application shutdown complete.
 
 ## Not verified
 
-- `docker compose up -d db` reaching `healthy`, and the `leafclutch_test` init script
-  running — the container never started because the host port is taken.
-- `uv run alembic current` against the compose database — it connects to the host's
-  PostgreSQL 18 and fails authentication.
 - Migration `upgrade`/`downgrade` — there are no revisions yet.
 - `uv sync` from a literal clean checkout — it ran in this working tree and resolved
   `uv.lock`; no second clone was made.
+- The default Compose port 5432 — this machine cannot bind it (native PostgreSQL 18), so
+  only the `POSTGRES_PORT=5434` override was verified end to end.
+- Database-backed tests — M1 has none; the suite constructs an engine but opens no
+  connection.
