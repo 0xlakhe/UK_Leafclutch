@@ -275,6 +275,22 @@ code, not editable content (decision 19). The browser posts to Next.js at
 | `service` | string | yes when options exist | one ever-published title or `__other__` | radio chips in one group; the last chip, "Something else", sends `__other__` and is not a service row. |
 | `message` | string | yes | 1–2000 | plain text, line breaks kept. |
 | `website` | string | must be empty | 0 | honeypot; hidden from sight and assistive technology. |
+| `turnstile_token` | string | yes | — | Cloudflare Turnstile token from the widget; verified once, server-side, after the rate-limit check (`CONTRACT.md:836-845`, `:937`). |
+
+**The Turnstile widget.** It sits above the send button and is not CMS content. States:
+loading, ready, verifying, failed (the token expired or the challenge was rejected) and
+not loaded. A failed or missing token keeps the visitor's text, asks for another try and
+surfaces the API's `verification_failed` (400). If the script cannot load, or
+JavaScript is off, the form shows the site email address instead of a dead button; there
+is no fallback submission without a token (`CONTRACT.md:980-981`).
+
+**BFF boundary.** The browser never sends an address. Next derives the visitor's single
+`X-Client-IP` from the platform (`x-vercel-forwarded-for`; `CF-Connecting-IP` only when
+the platform address is inside Cloudflare's published ranges) and sends it with
+`X-Service-Token`; FastAPI rate-keys on that one header and never reads
+`X-Forwarded-For` (`CONTRACT.md:75-92`). Logs carry only the enquiry id, the outcome and
+the hashed address: never the message, the email or the raw address
+(`CONTRACT.md:830-832`).
 
 Not browser fields: `source_path` is set by Next.js from the same-origin `Referer`
 (path only, no query string, 200 max); `consent_notice_version` is set by FastAPI at save
@@ -305,6 +321,50 @@ navigation when a save failed (`ADMIN.md` §3 "Shared screen behaviour").
 Role is enforced server-side on every request, not by hiding a button: an Editor gets
 `403 forbidden` from every Admin-only endpoint (`ADMIN.md` §1, AD-2). The two roles are
 `admin` and `editor`; there is no third role in Phase 1.
+
+### 3.x Admin request field names — flat columns, not public payload names
+
+The admin `PATCH` body is the kind's **typed table**, with flat columns, not the nested
+public payload: `ADMIN.md:329` names "typed body" for the draft update and
+`ADMIN.md:399-402` says it is "the kind's table", for example `section_version`,
+`project_version` and `settings_version`. Sending a public payload name such as
+`primary_cta.label` to that body is a `422 validation_failed`. Use this mapping for the
+two shapes whose names differ; every other admin form in this chapter already uses the
+request name.
+
+| Public payload name (CONTRACT) | Admin request name | Source |
+| --- | --- | --- |
+| `primary_cta.label` | `primary_label` | `DATABASE.md:614` |
+| `primary_cta.href` | `primary_href` | `DATABASE.md:615` |
+| `secondary_cta.label` | `secondary_label` | `DATABASE.md:616` |
+| `secondary_cta.href` | `secondary_href` | `DATABASE.md:617` |
+| `cta.label` | `cta_label` | `DATABASE.md:618` |
+| `cta.href` | `cta_href` | `DATABASE.md:619` |
+| `privacy_note.text` | `privacy_text` | `DATABASE.md:620` |
+| `privacy_note.link_label` | `privacy_link_label` | `DATABASE.md:621` |
+| `image` | `image_id` | `DATABASE.md:622` |
+| `about.body` | `section_paragraph[]`, `text` per paragraph | `DATABASE.md:690-700` |
+| `company.legal_name` | `legal_name` | `DATABASE.md:1300` |
+| `company.trading_name` | `trading_name` | `DATABASE.md:1301` |
+| `company.country` | `country` | `DATABASE.md:1302` |
+| `company.address` | `settings_address_line[]`, `line` per row | `DATABASE.md:1359-1367` |
+| `logo` | `site_logo_id` | `DATABASE.md:1314` |
+| `contact.email` | `contact_email` | `DATABASE.md:1303` |
+| `contact.phone` | `contact_phone` | `DATABASE.md:1304` |
+| `contact.phone_hours` | `contact_phone_hours` | `DATABASE.md:1305` |
+| `contact.hours.summary` | `hours_summary` | `DATABASE.md:1306` |
+| `contact.hours.timezone` | `hours_timezone` | `DATABASE.md:1307` |
+| `locations[]` | `settings_location[]` (`name`, `country`, `phone`, `phone_hours`) | `DATABASE.md:1369-1382` |
+| `locations[].address` | `settings_location_address_line[]`, `line` per row | `DATABASE.md:1384-1400` |
+| `footer_links[]` | `settings_footer_link[]` (`label`, `href`) | `DATABASE.md:1402-1416` |
+| `seo_defaults.title_suffix` | `seo_title_suffix` | `DATABASE.md:1309` |
+| `seo_defaults.description` | `seo_description` | `DATABASE.md:1310` |
+| `seo_defaults.og_image` | `seo_og_image_id` | `DATABASE.md:1311` |
+| `form.services` | not in a request body: computed at read time from published services | `CONTRACT.md` "Site settings"; decision 48 |
+
+The same rule covers the other kinds: `project_version.images[]` is a row per image
+with `media_id`, `project_version.technologies[]` is `project_technology[]` with
+`name`, and `content_seo` is part of every page kind's body (`ADMIN.md:399-402`).
 
 ### 3.0 Shared item chrome — every content screen
 
@@ -377,7 +437,10 @@ live, unpublished, blocked publish.
 ### 3.4 Section editor — `/admin/pages/landing/sections/[itemId]`
 
 Admin and Editor. The editor renders the fields of the section's `key` from §2.2–2.11,
-plus the rows below. It never creates, reorders or deletes sections.
+plus the rows below. It never creates, reorders or deletes sections. The request body is
+`section_version` with flat columns: `primary_cta.label` is `primary_label`, `cta.label`
+is `cta_label`, `privacy_note.text` is `privacy_text`, and `image` is `image_id` (§3.x;
+`ADMIN.md:329`, `:399-402`).
 
 | Field | Type | Required | Limit | Role or state that gates it |
 | --- | --- | --- | --- | --- |
@@ -467,7 +530,8 @@ services inside a group. States: draft, live, archived.
 
 ### 3.8 Service or group editor — `/admin/services/[itemId]`
 
-Admin and Editor. One screen, two shapes selected by `kind`.
+Admin and Editor; publish, unpublish and archive are Admin only. One screen, two
+shapes selected by `kind`.
 
 | Field | Type | Required | Limit | Role or state that gates it |
 | --- | --- | --- | --- | --- |
@@ -501,7 +565,8 @@ approval expired.
 
 ### 3.10 Project editor — `/admin/projects/[itemId]`
 
-Admin and Editor; the approval panel is Admin only.
+Admin and Editor; the approval panel is Admin only, and publish, unpublish and archive
+are Admin only.
 
 | Field | Type | Required | Limit | Role or state that gates it |
 | --- | --- | --- | --- | --- |
@@ -567,7 +632,8 @@ revoked, no slot (logos). The approval badge is derived from §3.11.
 
 ### 3.13 Proof figure editor — `/admin/proof/proof_figure/[itemId]`
 
-Admin and Editor; approval is Admin only.
+Admin and Editor; approval is Admin only, and publish, unpublish and archive are Admin
+only.
 
 | Field | Type | Required | Limit | Role or state that gates it |
 | --- | --- | --- | --- | --- |
@@ -584,7 +650,8 @@ history. States: draft, live, expired, revoked.
 
 ### 3.14 Testimonial editor — `/admin/proof/testimonial/[itemId]`
 
-Admin and Editor; approval is Admin only.
+Admin and Editor; approval is Admin only, and publish, unpublish and archive are Admin
+only.
 
 | Field | Type | Required | Limit | Role or state that gates it |
 | --- | --- | --- | --- | --- |
@@ -602,7 +669,8 @@ history. States: draft, live, expired, revoked.
 
 ### 3.15 Client logo editor — `/admin/proof/client_logo/[itemId]`
 
-Admin and Editor; approval is Admin only. There is no page slot in Phase 1.
+Admin and Editor; approval is Admin only, and publish, unpublish and archive are Admin
+only. There is no page slot in Phase 1.
 
 | Field | Type | Required | Limit | Role or state that gates it |
 | --- | --- | --- | --- | --- |
@@ -739,6 +807,10 @@ Admin only. Settings are one versioned item, published like any other; the live 
 changes only on publish (`ADMIN.md` §9). Fixed kinds are never created or deleted from the
 UI (A16); archive and restore exist, and M8 accepts that settings may be unpublished while
 the landing page is live.
+
+The form's request names are the flat `settings_version` and child-row columns, not the
+nested public payload: `company.legal_name` is `legal_name`, `locations[].address` is
+`settings_location_address_line[]`, and the rest are in §3.x (`ADMIN.md:399-402`).
 
 | Field | Type | Required | Limit | Role or state that gates it |
 | --- | --- | --- | --- | --- |
@@ -1052,7 +1124,7 @@ before the control is built.
 | --- | --- | --- | --- | --- |
 | C1 | `contact.phone_hours` shape, and which field carries the 120-character hours limit | `CONTRACT.md:721-728`: `phone_hours` is `null` and `hours` is the object `{summary, timezone}`. `CONTRACT.md:1111`: the limit is named against `phone_hours.summary`, "with `timezone` Europe/London". | `ADMIN.md:718`: the field is `contact_phone_hours`, a text column. `DATABASE.md:1304-1305`: `contact_phone_hours text`, and the phone/hours constraint is a paired null check. | Do not build a phone-hours control until the shape is settled: a single text field and an object with `summary`/`timezone` need different forms. |
 | C2 | `locations[].phone_hours` shape | `CONTRACT.md:776-778`: a location with a phone "carries `phone_hours` in its own timezone", and `phone_hours` has "the same shape as `contact.hours`" (an object). | `CONTRACT.md:735-736`: the payload sample shows `phone_hours: null` (a scalar). `CONTRACT.md:1108-1110`: the limit table gives `location.phone` 32 but no `location.phone_hours` limit at all. | A location form cannot know whether to render a text field or a summary plus timezone. Wait for OpenAPI. |
-| C3 | `next_steps` title and body limits | `CONTRACT.md:1102`: 1–4 items; `title` 80, `body` 200. | `DATABASE.md:758-763`: `contact_next_step.title` ≤ 40 and `body` ≤ 160. | A form that accepts 80/200 will be refused at the database boundary. Use the server's Pydantic limit, not either document's number, once OpenAPI exists. |
+| C3 | `next_steps` title and body limits | `CONTRACT.md:1102`: 1–4 items; `title` 80, `body` 200. | `DATABASE.md:758-763`: `contact_next_step.title` ≤ 40 and `body` ≤ 160. | **Cap the form at 40/160 until the two are reconciled.** The Pydantic limit does not settle it: it is built from the same CONTRACT row that says 80/200, so a form sending 60 characters is accepted by Pydantic and refused by the database. Change both sources in one revision; do not ship 80/200 first. |
 | C4 | `slug` and `path` optionality on create | `ADMIN.md:324`: `POST /content` takes `{kind, path?, slug?}` — both optional. | `CONTRACT.md:396-397`: service and project records keep a `slug` for Phase 2. `DATABASE.md:348-353`: a `legal_page` and `landing_page` require a path, and a `service` and `project` require a slug. | The create form cannot assume either is optional. For a service or project, a missing slug reaches a database refusal; for a legal page, a missing path does. |
 | C5 | M8: settings unpublished while the landing page is live | `ADMIN.md:930-931`: "Settings can be unpublished while the landing page is live, which would empty the site frame and legal identity; a gate needs a decision." | `Backend/docs/work/PLAN.md:220-224` and `PROGRESS.md:310`: the owner accepted M8 on 27 November, no gate, risk recorded and not mitigated. | No gate is the accepted behaviour, but ADMIN.md still calls it open. Build no gate; flag the doc drift to the orchestrator. |
 | C6 | Preview role for settings | `ADMIN.md:364`: `GET /preview` is "both (legal_page: Admin)". | `ADMIN.md:390-392`: "`legal_page` and `settings` require Admin on every content read and write, version read and preview". | An Editor's preview of settings is `403` under the prose and unspecified under the table. Do not offer it until settled. |
