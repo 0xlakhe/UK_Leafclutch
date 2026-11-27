@@ -5,8 +5,9 @@
 Run the SQL in `docs/DATABASE.md` against a scratch PostgreSQL 18 database and prove the
 unpublish, archive and delete behaviour task 0002 added: the `_unpublish_internal` helper
 and `unpublish_content` wrapper, `archive_content`, `restore_content` and
-`delete_content`, including its five refusals. This is the only way to execute those
-functions before `api/` exists.
+`delete_content`, including its five refusals. It also proves that archiving a landing
+page removes a live section pointer when the page has no pointer of its own. This is the
+only way to execute those functions before `api/` exists.
 
 `database-validation.sql` beside this page holds the fixtures and assertions. This page
 holds the commands. The run covers the unpublish/archive/delete half of the validation;
@@ -98,12 +99,12 @@ print(f"{len(blocks)} SQL blocks")
 PY
 ```
 
-At the time of the recorded run this prints `57 SQL blocks`.
+At the time of the recorded run this prints `58 SQL blocks`.
 
 ## 4. Apply the blocks
 
 Copy the extracted blocks into the container and apply them one at a time with
-`ON_ERROR_STOP`. Block 56 is the `cron.schedule` block; the image has no `pg_cron`, so it
+`ON_ERROR_STOP`. Block 57 is the `cron.schedule` block; the image has no `pg_cron`, so it
 is skipped by content rather than by number.
 
 ```bash
@@ -119,7 +120,7 @@ for f in $(docker exec lc-pg18-validate sh -c 'ls /tmp/lc-blocks/*.sql | sort');
 done
 ```
 
-The run prints `skip /tmp/lc-blocks/56.sql (no pg_cron)` once. Confirm the base tables:
+The run prints `skip /tmp/lc-blocks/57.sql (no pg_cron)` once. Confirm the base tables:
 
 ```bash
 docker exec lc-pg18-validate psql -U postgres -d lc -tAc \
@@ -141,7 +142,7 @@ The script sets `ON_ERROR_STOP` itself, so any failed assertion exits non-zero.
 
 ## Expected output
 
-A fresh run applies cleanly. The notices below are the recorded output of the second
+A fresh run applies cleanly. The notices below are the recorded output of the third
 27 November 2026 run (line numbers depend on the script; the messages do not):
 
 ```
@@ -149,33 +150,36 @@ A fresh run applies cleanly. The notices below are the recorded output of the se
 INSERT 0 1
 INSERT 0 1
 ## page, sections, unpublish, republish
-psql:/tmp/database-validation.sql:103: NOTICE:  PASS fixture: page and ten sections published
-psql:/tmp/database-validation.sql:103: NOTICE:  PASS unpublish landing page: 11 pointers removed, 11 drafts exist
-psql:/tmp/database-validation.sql:103: NOTICE:  PASS publish_page republished the page from the 11 drafts
+psql:/tmp/database-validation.sql:105: NOTICE:  PASS fixture: page and ten sections published
+psql:/tmp/database-validation.sql:105: NOTICE:  PASS unpublish landing page: 11 pointers removed, 11 drafts exist
+psql:/tmp/database-validation.sql:105: NOTICE:  PASS publish_page republished the page from the 11 drafts
 DO
 ## service lifecycle
-psql:/tmp/database-validation.sql:193: NOTICE:  PASS unpublish service: pointer gone, one draft, published version kept, audit written
-psql:/tmp/database-validation.sql:193: NOTICE:  PASS second unpublish: no new draft, audit row still written (documented)
-psql:/tmp/database-validation.sql:193: NOTICE:  PASS unpublish reuses an existing open draft: pointer gone, third audit row
-psql:/tmp/database-validation.sql:193: NOTICE:  PASS archive: no draft, archived flag, audit row, one page:/ cache tag
-psql:/tmp/database-validation.sql:193: NOTICE:  PASS restore: flags cleared, unpublished, no draft, no pointer, no cache tag
+psql:/tmp/database-validation.sql:197: NOTICE:  PASS unpublish service: pointer gone, one draft, published version kept, audit written
+psql:/tmp/database-validation.sql:197: NOTICE:  PASS second unpublish: no new draft, audit row still written (documented)
+psql:/tmp/database-validation.sql:197: NOTICE:  PASS unpublish reuses an existing open draft: pointer gone, third audit row
+psql:/tmp/database-validation.sql:197: NOTICE:  PASS archive: no draft, archived flag, audit row, one page:/ cache tag
+psql:/tmp/database-validation.sql:197: NOTICE:  PASS restore: flags cleared, unpublished, no draft, no pointer, no cache tag
 DO
 ## delete and refusals
-psql:/tmp/database-validation.sql:334: NOTICE:  PASS delete never-published service: row and versions gone, one audit row, no cache tag
-psql:/tmp/database-validation.sql:334: NOTICE:  PASS legal page draft deleted twice and its path reused
-psql:/tmp/database-validation.sql:334: NOTICE:  PASS delete refuses a published item
-psql:/tmp/database-validation.sql:334: NOTICE:  PASS delete refuses the fixed kinds: landing page, section, settings
-psql:/tmp/database-validation.sql:334: NOTICE:  PASS delete refuses an approved item
-psql:/tmp/database-validation.sql:334: NOTICE:  PASS delete refuses an item referenced by a section version
-psql:/tmp/database-validation.sql:334: NOTICE:  PASS delete refuses a group with a service version
+psql:/tmp/database-validation.sql:338: NOTICE:  PASS delete never-published service: row and versions gone, one audit row, no cache tag
+psql:/tmp/database-validation.sql:338: NOTICE:  PASS legal page draft deleted twice and its path reused
+psql:/tmp/database-validation.sql:338: NOTICE:  PASS delete refuses a published item
+psql:/tmp/database-validation.sql:338: NOTICE:  PASS delete refuses the fixed kinds: landing page, section, settings
+psql:/tmp/database-validation.sql:338: NOTICE:  PASS delete refuses an approved item
+psql:/tmp/database-validation.sql:338: NOTICE:  PASS delete refuses an item referenced by a section version
+psql:/tmp/database-validation.sql:338: NOTICE:  PASS delete refuses a group with a service version
 DO
 ## archive and restore the page
-psql:/tmp/database-validation.sql:403: NOTICE:  PASS archive page: 11 items archived, no drafts created, pointer gone, audit row, page:/ and routes cache tag
-psql:/tmp/database-validation.sql:403: NOTICE:  PASS restore page: all 11 flags cleared, nothing live, no new draft, no cache tag
+psql:/tmp/database-validation.sql:409: NOTICE:  PASS archive page: 11 items archived, no drafts created, pointer gone, audit row, page:/ and routes cache tag
+psql:/tmp/database-validation.sql:409: NOTICE:  PASS restore page: all 11 flags cleared, nothing live, no new draft, no cache tag
+DO
+## archive page with a live section and no page pointer
+psql:/tmp/database-validation.sql:500: NOTICE:  PASS archive page with a live section and no page pointer: 11 archived, pointers gone, one page unpublish audit row, page:/ and routes cache tag, no draft
 DO
 ```
 
-That is 17 `PASS` notices, two `INSERT 0 1` lines and four `DO` blocks, and psql exits
+That is 18 `PASS` notices, two `INSERT 0 1` lines and five `DO` blocks, and psql exits
 0. A fresh database is required: the fixture inserts fixed ids and slugs, so a second run
 on the same database fails on those inserts.
 

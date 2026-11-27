@@ -407,3 +407,94 @@ begin
   raise notice 'PASS restore page: all 11 flags cleared, nothing live, no new draft, no cache tag';
 end;
 $$;
+
+\echo '## archive page with a live section and no page pointer'
+do $$
+declare
+  v_admin uuid := '00000000-0000-0000-0000-0000000000a1';
+  v_page uuid; v_hero uuid; v_ver uuid; v_ids uuid[];
+  n int; n_before int; n_after int; n_reval int; n_unpub int; n_unpub_page int;
+  n_archive int; v_tags text[]; v_audit_entity text;
+begin
+  select id into v_page from content_item where kind = 'landing_page' and path = '/';
+  select item_id into v_hero from page_section where page_id = v_page and section_key = 'hero';
+  select array_agg(item_id) into v_ids from page_section where page_id = v_page;
+  v_ids := v_ids || v_page;
+
+  select count(*) into n from content_publication where item_id = any(v_ids);
+  if n <> 0 then raise exception 'precondition: % pointers before publishing the hero', n; end if;
+
+  v_ver := create_draft(v_hero, v_admin);
+  perform publish_content(v_hero, v_ver, v_admin);
+
+  select count(*) into n from content_publication where item_id = v_page;
+  if n <> 0 then raise exception 'setup: page pointer present'; end if;
+  select count(*) into n from content_publication where item_id = v_hero;
+  if n <> 1 then raise exception 'setup: hero pointers %', n; end if;
+
+  select count(*) into n_before from content_version
+  where item_id = any(v_ids) and status in ('draft', 'in_review');
+  select count(*) into n_reval from revalidation;
+  select count(*) into n_unpub from audit_log where action = 'unpublish';
+  select count(*) into n_unpub_page from audit_log
+  where action = 'unpublish' and entity_kind = 'landing_page' and entity_id = v_page::text;
+  select count(*) into n_archive from audit_log where action = 'archive';
+
+  perform archive_content(v_page, v_admin);
+
+  select count(*) into n from content_item where id = any(v_ids) and archived_at is not null;
+  if n <> 11 then raise exception 'archive page with live section: % of 11 archived', n; end if;
+
+  select count(*) into n from content_publication where item_id = any(v_ids);
+  if n <> 0 then raise exception 'archive page with live section: % pointers remain', n; end if;
+
+  select count(*) into n from audit_log where action = 'unpublish';
+  if n <> n_unpub + 1 then
+    raise exception 'archive page with live section: % unpublish rows, expected %', n, n_unpub + 1;
+  end if;
+  select count(*) into n from audit_log
+  where action = 'unpublish' and entity_kind = 'landing_page' and entity_id = v_page::text;
+  if n <> n_unpub_page + 1 then
+    raise exception 'archive page with live section: % page unpublish rows, expected %', n, n_unpub_page + 1;
+  end if;
+  select entity_id into v_audit_entity from audit_log where action = 'unpublish' order by id desc limit 1;
+  if v_audit_entity is distinct from v_page::text then
+    raise exception 'archive page with live section: newest unpublish row names %', v_audit_entity;
+  end if;
+
+  select count(*) into n from audit_log where action = 'archive';
+  if n <> n_archive + 1 then
+    raise exception 'archive page with live section: % archive rows, expected %', n, n_archive + 1;
+  end if;
+  select entity_id into v_audit_entity from audit_log where action = 'archive' order by id desc limit 1;
+  if v_audit_entity is distinct from v_page::text then
+    raise exception 'archive page with live section: newest archive row names %', v_audit_entity;
+  end if;
+
+  select count(*) into n from revalidation;
+  if n <> n_reval + 1 then
+    raise exception 'archive page with live section: % revalidation rows, expected %', n, n_reval + 1;
+  end if;
+  select tags into v_tags from revalidation order by id desc limit 1;
+  if (select array_agg(t order by t) from unnest(v_tags) t)
+     is distinct from
+     (select array_agg(t order by t) from unnest(array['page:/', 'routes']) t) then
+    raise exception 'archive page with live section: newest revalidation tags %, expected exactly {page:/,routes}', v_tags;
+  end if;
+
+  select count(*) into n_after from content_version
+  where item_id = any(v_ids) and status in ('draft', 'in_review');
+  if n_after <> n_before then
+    raise exception 'archive page with live section: drafts % -> %', n_before, n_after;
+  end if;
+
+  raise notice 'PASS archive page with a live section and no page pointer: 11 archived, pointers gone, one page unpublish audit row, page:/ and routes cache tag, no draft';
+
+  perform restore_content(v_page, v_admin);
+
+  select count(*) into n from content_item where id = any(v_ids) and archived_at is null;
+  if n <> 11 then raise exception 'restore page: % of 11 cleared', n; end if;
+  select count(*) into n from content_item where id = any(v_ids) and archived_by is null;
+  if n <> 11 then raise exception 'restore page: % of 11 have archived_by cleared', n; end if;
+end;
+$$;

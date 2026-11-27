@@ -53,9 +53,10 @@ for these tables.
 - **Enquiries are saved before email.** The enquiry and its two outbox rows are written
   in one transaction; a worker sends them with retries.
 - **Revalidation is an outbox.** A publish or unpublish writes `revalidation` rows in
-  the same transaction, and archive writes them through its unpublish when the item was
-  live; a permanent delete writes none, because the item never published. A FastAPI
-  worker drains them. Restore writes none, because it does not publish.
+  the same transaction, and archive writes them through its unpublish when the item, or a
+  live section of a landing page, was live; a permanent delete writes none, because the
+  item never published. A FastAPI worker drains them. Restore writes none, because it
+  does not publish.
 - **Audit is append-only.** Sign-in attempts (success and failure, for AD-7 and the
   AD-10 slowdown) are written by FastAPI to `sign_in_event` and purged after
   12 months; application actions are written to `audit_log`. Supabase Auth's own
@@ -496,6 +497,8 @@ the pointed version's `version_number`.
 The archive guard makes the pointer rule structural. `archive_content` unpublishes
 first, so the guard passes on the normal path, which includes a landing page whose live
 sections outlive its own pointer, and a direct archive that left the item live is refused.
+The condition is read without locking the section rows, so a concurrent section publish
+can still trip the guard; the archive rolls back cleanly and is safe to retry.
 
 ```sql
 create or replace function prevent_archived_with_publication()
@@ -3564,9 +3567,10 @@ end;
 $$;
 ```
 
-Archive is the normal delete: it unpublishes a live item and then marks it archived in
-one transaction, so the public change is an unpublish with its `page:<path>` and
-`routes` tags. It creates no draft; a restored item returns to `unpublished`, or to the
+Archive is the normal delete: it unpublishes a live item, or a landing page's live
+section, and then marks the item archived in one transaction, so the public change is an
+unpublish with its `page:<path>` and `routes` tags; the `unpublish` row names the
+archived item. It creates no draft; a restored item returns to `unpublished`, or to the
 open draft that survived the archive, and the next `create_draft` copies the latest
 published version when no draft is open. Restore only clears the flags; the item is not
 live again until an Admin publishes it, and that publish writes its own revalidation
@@ -4789,8 +4793,9 @@ Rules for every migration:
   succeeds and a second value is refused.
 - `/routes` and the legal `updated_on` use `(published_at at time zone 'Europe/London')::date`;
   a 23:30 UTC publish in BST returns the next UK day.
-- Archive unpublishes a live item and queues its page tag; restore clears the flags and
-  publishes nothing.
+- Archive unpublishes a live item, or a landing page whose section pointer is live while
+  its own is not, and queues its page tag; `docs/runbooks/database-validation.sql` covers
+  the page-pointer-absent case. Restore clears the flags and publishes nothing.
 - Unpublish deletes the pointer and creates a draft; a landing-page unpublish leaves
   eleven drafts (created or reused). A permanent delete removes only a never-published
   item and writes one `delete` audit row.

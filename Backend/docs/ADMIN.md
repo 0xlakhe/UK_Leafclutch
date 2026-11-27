@@ -435,10 +435,11 @@ working hours and footer links. `content_seo` is part of every page kind's body.
 Publish and unpublish write the `revalidation` row and the `audit_log` row in the same
 transaction. Approval revocation always writes the `audit_log` row and writes
 `revalidation` rows only for pages whose live section versions reference the record,
-which may be none. Archive always writes the `archive` audit row; when it first
-unpublishes a live item it also writes an `unpublish` audit row and a `revalidation`
-row. Restore writes the audit row only; delete writes one `delete` audit row and no
-revalidation row; `create_draft` writes neither. The API writes
+which may be none. Archive always writes the `archive` audit row; when it removes a live
+pointer — the item's own or, for a landing page, a section's — it also writes an
+`unpublish` audit row naming the archived item and a `revalidation` row. Restore writes
+the audit row only; delete writes one `delete` audit row and no revalidation row;
+`create_draft` writes neither. The API writes
 the audit row for direct writes (media, approvals, enquiries, staff) in the same
 transaction as the change.
 
@@ -543,10 +544,10 @@ create_draft ──► draft ──submit──► in_review ──publish──
   from the live page until it is republished, and the other sections keep their
   pointers.
 - **Archive** is the normal delete: it unpublishes a live item and creates no draft.
-  Archiving the landing page also unpublishes a section that is still live when the page
-  itself is not, and archives its sections in the same transaction. **Restore**
-  clears the flags, sections included, leaves the item `unpublished` or in the open draft
-  that survived the archive, and does not republish; the next Edit continues or creates
+  Archiving the landing page unpublishes every live section pointer, whether or not the
+  page's own pointer is present, and archives its sections in the same transaction.
+  **Restore** clears the flags, sections included, leaves the item `unpublished` or in
+  the open draft that survived the archive, and does not republish; the next Edit continues or creates
   the draft, and no revalidation row is written.
 - **Delete** permanently removes an item that was never published, carries no approval,
   is not one of the three fixed kinds that are never created from the UI (the landing
@@ -786,9 +787,10 @@ nothing cached. It is staff-session-only and never public.
   same transaction as the change. Approval revocation always writes the `audit_log` row
   and writes `revalidation` rows only for pages whose live section versions reference
   the record, which may be none. Archive always writes the `archive` audit row and,
-  when it first unpublishes a live item, also writes the `unpublish` audit row and a
-  `revalidation` row; restore writes the audit row only; delete writes one `delete`
-  audit row and no revalidation row; `create_draft` writes neither.
+  when it removes a live pointer — the item's own or, for a landing page, a section's —
+  also writes the `unpublish` audit row naming the archived item and a `revalidation`
+  row; restore writes the audit row only; delete writes one `delete` audit row and no
+  revalidation row; `create_draft` writes neither.
 - A FastAPI worker posts the tags to Next (`POST /api/revalidate`, shared secret),
   marks the row sent, and retries with backoff. A publish is complete when the row is
   written, not when Next answers.
