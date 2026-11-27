@@ -76,6 +76,20 @@ No migration content changes. The suite still applies `alembic upgrade head` onc
   (`leafclutch_scratch_regroup_test`, `leafclutch_scratch_bound_test`) and both were
   dropped afterwards; the real test database was not altered. `tests/test_media_schema.py`
   is 59 tests; the suite is 326.
+- **2026-11-28 — Step 2: content-spine behavioural pins.** `Backend/tests/test_content_spine.py`
+  now pins the five L1 gaps: a published version with a `content_seo` row cannot be
+  deleted and the SEO row survives; a published version stays undeletable after its
+  publication pointer is removed (history kept); deleting an item with a live pointer
+  refuses through the version cascade with the published-version message; restoring an
+  archived item clears both flags while clearing only one is still refused; and every
+  restrict foreign key named in the brief is exercised by deleting the referenced row
+  (`content_item.created_by`, `content_version.created_by`/`.updated_by`/`.published_by`,
+  `content_publication.published_by`, `content_seo.og_image_id`). Each refusal matches the
+  named constraint or message and asserts the child row keeps its reference. A local
+  `media_values`/`add_media` helper copies the shape `tests/test_media_schema.py` inserts;
+  every staff row is an Editor and each FK uses its own row, so `enforce_last_admin` never
+  fires first. All twelve new cases passed on the first run: no probe contradicted
+  `DATABASE.md`. `tests/test_content_spine.py` is 108 tests; the suite is 338.
 
 ## Decisions made
 
@@ -86,12 +100,26 @@ No migration content changes. The suite still applies `alembic upgrade head` onc
 - **The 0003 work file is not rewritten.** Its `## Open questions` sentence calling the
   parentheses decorative is superseded by the code and this entry; the orchestrator records
   the review closure in `0003-media.md`.
+- **Content-spine refusals are pinned by behaviour, not by re-pinning SQL.** The Step 2
+  tests use the existing helpers and `db.begin_nested()`, and match the constraint name or
+  trigger message the database actually raised. The M4 function bodies stay as fragment
+  pins: as `## Plan` records, the exact normalised-body comparison is reserved for the
+  seven M5 guard functions, because the M3/M4 bodies live inline in already-pushed
+  revisions and duplicating them adds no branch coverage beyond the existing mutation
+  proofs.
+- **Staff FK probes use Editors.** Every referenced staff row is an Editor, and the
+  `content_item` and `content_version` cases use a separate row per foreign key, so the
+  delete reaches the named restrict FK rather than `enforce_last_admin`.
 
 ## Files changed
 
 - `Backend/tests/test_media_schema.py` — parenthesis-preserving `normalise_constraint`,
   corrected comments, the empty-evidence-alt test, the two timestamp update-path refusals
   and the equal-timestamp update/promotion acceptance test
+- `Backend/tests/test_content_spine.py` — the L1 behavioural pins: published-version
+  deletion with SEO and after unpublishing, the live-pointer item cascade, restore and
+  half-clear archive flags, and the staff/media restrict foreign keys, plus the local
+  `media_values`/`add_media` helper
 - `Backend/docs/work/0008-deferred-test-strength.md` — this log
 
 ## Migrations
@@ -181,14 +209,73 @@ FAILED tests/test_media_schema.py::test_every_documented_constraint_matches_its_
 Both scratch databases were dropped; the real `leafclutch_test` and `leafclutch`
 databases were not altered.
 
+Step 2 runs on 2026-11-28 (same PostgreSQL 18.7 target):
+
+```
+$ uv run ruff check .
+All checks passed!
+
+$ uv run mypy app
+Success: no issues found in 6 source files
+```
+
+```
+$ uv run pytest -q
+........................................................................ [ 21%]
+........................................................................ [ 42%]
+........................................................................ [ 63%]
+........................................................................ [ 84%]
+...................................................                      [100%]
+338 passed, 4 warnings in 1.52s
+
+$ uv run pytest -q --import-mode=importlib
+........................................................................ [ 21%]
+........................................................................ [ 42%]
+........................................................................ [ 63%]
+........................................................................ [ 84%]
+...................................................                      [100%]
+338 passed, 4 warnings in 1.47s
+
+$ uv run alembic check
+INFO  [alembic.runtime.plugins] setting up autogenerate plugin alembic.autogenerate.types
+INFO  [alembic.runtime.plugins] setting up autogenerate plugin alembic.autogenerate.constraints
+INFO  [alembic.runtime.plugins] setting up autogenerate plugin alembic.autogenerate.defaults
+INFO  [alembic.runtime.plugins] setting up autogenerate plugin alembic.autogenerate.comments
+No new upgrade operations detected.
+```
+
+`tests/test_content_spine.py` alone after the change:
+
+```
+$ uv run pytest -q tests/test_content_spine.py
+........................................................................ [ 66%]
+....................................                                     [100%]
+108 passed, 1 warning in 0.65s
+```
+
+The twelve new cases (ten single-case functions plus one parametrised over the two
+half-cleared flags) ran:
+
+```
+$ uv run pytest -q tests/test_content_spine.py -k "with_seo_cannot or live_pointer \
+    or survives_unpublishing or restoring_an_archived or clearing_only_one \
+    or item_creator or version_creator or version_editor or version_publisher \
+    or publication_publisher or og_image"
+12 passed, 96 deselected, 1 warning in 0.32s
+```
+
+All passed; no probe failed or contradicted the document.
+
 ## Review
 
 ## Docs updated
 
 ## Remaining
 
-- Steps 2 and 3 of the plan — the content-spine behavioural pins and the page-section
-  real-commit/exact-body pins — are later commits of task 0008.
+- Step 3 of the plan — the page-section real-commit and exact-body pins — is a later
+  commit of task 0008.
+- The M4 `## Remaining` item L1 is closed by the Step 2 pins. The 0004 work file is not
+  edited, per the brief.
 - `media_bucket` and `media_mime_length` still have no behavioural test; their installed
   definitions are pinned by the catalog test, as recorded in task 0003's `## Not verified`.
 - The deferred Low about the 0003 `## Open questions` wording is superseded here, not

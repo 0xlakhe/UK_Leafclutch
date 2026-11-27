@@ -24,6 +24,7 @@ from app.models import (
     content_publication,
     content_seo,
     content_version,
+    media,
     staff,
 )
 
@@ -381,6 +382,33 @@ def add_seo(db: Connection, version_id: uuid.UUID, **overrides: object) -> None:
     db.execute(sa.insert(content_seo).values(**values))
 
 
+def media_values(uploaded_by: uuid.UUID, **overrides: object) -> dict[str, object]:
+    """A valid staged image row, matching the shape ``tests/test_media_schema.py`` inserts."""
+    values: dict[str, object] = {
+        "visibility": "private",
+        "bucket": "media-staging",
+        "object_path": f"{uuid.uuid4()}.webp",
+        "mime_type": "image/webp",
+        "size_bytes": 1024,
+        "width": 800,
+        "height": 600,
+        "alt": "A descriptive alt",
+        "checksum_sha256": bytes(32),
+        "uploaded_by": uploaded_by,
+    }
+    values.update(overrides)
+    return values
+
+
+def add_media(db: Connection, uploaded_by: uuid.UUID, **overrides: object) -> uuid.UUID:
+    """Insert one media row and return its id."""
+    return db.execute(
+        sa.insert(media)
+        .values(**media_values(uploaded_by, **overrides))
+        .returning(media.c.id)
+    ).scalar_one()
+
+
 def select_item(db: Connection, item_id: uuid.UUID) -> sa.Row:
     return db.execute(sa.select(content_item).where(content_item.c.id == item_id)).one()
 
@@ -616,6 +644,23 @@ def test_a_published_version_cannot_be_deleted(db: Connection) -> None:
     assert count_rows(db, content_version, content_version.c.id == version_id) == 1
 
 
+def test_a_published_version_with_seo_cannot_be_deleted(db: Connection) -> None:
+    editor = add_staff(db)
+    item_id = add_item(db, editor)
+    version_id = add_version(db, item_id, editor)
+    add_seo(db, version_id, seo_title="Published title")
+    publish_version(db, version_id, editor)
+
+    with pytest.raises(DBAPIError, match=IMMUTABLE_VERSION):
+        with db.begin_nested():
+            db.execute(
+                sa.delete(content_version).where(content_version.c.id == version_id)
+            )
+
+    assert count_rows(db, content_version, content_version.c.id == version_id) == 1
+    assert count_rows(db, content_seo, content_seo.c.version_id == version_id) == 1
+
+
 def test_deleting_an_item_with_a_published_version_is_refused(db: Connection) -> None:
     editor = add_staff(db)
     item_id = add_item(db, editor)
@@ -628,6 +673,26 @@ def test_deleting_an_item_with_a_published_version_is_refused(db: Connection) ->
 
     assert count_rows(db, content_item, content_item.c.id == item_id) == 1
     assert count_rows(db, content_version, content_version.c.id == version_id) == 1
+
+
+def test_deleting_an_item_with_a_live_pointer_is_refused(db: Connection) -> None:
+    editor = add_staff(db)
+    item_id = add_item(db, editor)
+    version_id = add_version(db, item_id, editor)
+    publish_version(db, version_id, editor)
+    add_publication(db, item_id, version_id, editor)
+
+    # The item cascade reaches the published version, whose before-delete trigger refuses
+    # the delete before the composite pointer foreign key is considered.
+    with pytest.raises(DBAPIError, match=IMMUTABLE_VERSION):
+        with db.begin_nested():
+            db.execute(sa.delete(content_item).where(content_item.c.id == item_id))
+
+    assert count_rows(db, content_item, content_item.c.id == item_id) == 1
+    assert count_rows(db, content_version, content_version.c.id == version_id) == 1
+    assert (
+        count_rows(db, content_publication, content_publication.c.item_id == item_id) == 1
+    )
 
 
 @pytest.mark.parametrize(
@@ -829,6 +894,56 @@ def test_an_archived_item_records_both_flags(db: Connection) -> None:
     assert item.archived_by == editor
 
 
+def test_restoring_an_archived_item_clears_both_flags(db: Connection) -> None:
+    editor = add_staff(db)
+    item_id = add_item(db, editor, path="/archived")
+    db.execute(
+        sa.update(content_item)
+        .where(content_item.c.id == item_id)
+        .values(archived_at=datetime.now(UTC), archived_by=editor)
+    )
+
+    db.execute(
+        sa.update(content_item)
+        .where(content_item.c.id == item_id)
+        .values(archived_at=None, archived_by=None)
+    )
+
+    item = select_item(db, item_id)
+    assert item.archived_at is None
+    assert item.archived_by is None
+
+
+@pytest.mark.parametrize(
+    "clear",
+    [{"archived_at": None}, {"archived_by": None}],
+    ids=["archived-at-only", "archived-by-only"],
+)
+def test_clearing_only_one_archive_flag_is_refused(
+    db: Connection, clear: dict[str, object]
+) -> None:
+    editor = add_staff(db)
+    item_id = add_item(db, editor, path="/archived")
+    archived_at = datetime.now(UTC)
+    db.execute(
+        sa.update(content_item)
+        .where(content_item.c.id == item_id)
+        .values(archived_at=archived_at, archived_by=editor)
+    )
+
+    with pytest.raises(IntegrityError, match="content_item_archive"):
+        with db.begin_nested():
+            db.execute(
+                sa.update(content_item)
+                .where(content_item.c.id == item_id)
+                .values(**clear)
+            )
+
+    item = select_item(db, item_id)
+    assert item.archived_at == archived_at
+    assert item.archived_by == editor
+
+
 def test_deleting_the_archiver_is_refused(db: Connection) -> None:
     creator = add_staff(db)
     archiver = add_staff(db)
@@ -844,6 +959,102 @@ def test_deleting_the_archiver_is_refused(db: Connection) -> None:
             db.execute(sa.delete(staff).where(staff.c.user_id == archiver))
 
     assert select_item(db, item_id).archived_by == archiver
+
+
+def test_deleting_the_item_creator_is_refused(db: Connection) -> None:
+    creator = add_staff(db)
+    item_id = add_item(db, creator)
+
+    with pytest.raises(IntegrityError, match="content_item_created_by_fkey"):
+        with db.begin_nested():
+            db.execute(sa.delete(staff).where(staff.c.user_id == creator))
+
+    assert select_item(db, item_id).created_by == creator
+
+
+def test_deleting_the_version_creator_is_refused(db: Connection) -> None:
+    item_creator = add_staff(db)
+    version_creator = add_staff(db)
+    item_id = add_item(db, item_creator)
+    version_id = add_version(db, item_id, version_creator)
+
+    with pytest.raises(IntegrityError, match="content_version_created_by_fkey"):
+        with db.begin_nested():
+            db.execute(sa.delete(staff).where(staff.c.user_id == version_creator))
+
+    assert select_version(db, version_id).created_by == version_creator
+
+
+def test_deleting_the_version_editor_is_refused(db: Connection) -> None:
+    author = add_staff(db)
+    updater = add_staff(db)
+    item_id = add_item(db, author)
+    version_id = add_version(db, item_id, author, updated_by=updater)
+
+    with pytest.raises(IntegrityError, match="content_version_updated_by_fkey"):
+        with db.begin_nested():
+            db.execute(sa.delete(staff).where(staff.c.user_id == updater))
+
+    assert select_version(db, version_id).updated_by == updater
+
+
+def test_deleting_the_version_publisher_is_refused(db: Connection) -> None:
+    author = add_staff(db)
+    publisher = add_staff(db)
+    item_id = add_item(db, author)
+    version_id = add_version(db, item_id, author)
+    publish_version(db, version_id, publisher)
+
+    with pytest.raises(IntegrityError, match="content_version_published_by_fkey"):
+        with db.begin_nested():
+            db.execute(sa.delete(staff).where(staff.c.user_id == publisher))
+
+    assert select_version(db, version_id).published_by == publisher
+
+
+def test_deleting_the_publication_publisher_is_refused(db: Connection) -> None:
+    author = add_staff(db)
+    publisher = add_staff(db)
+    item_id = add_item(db, author)
+    version_id = add_version(db, item_id, author)
+    publish_version(db, version_id, author)
+    add_publication(db, item_id, version_id, publisher)
+
+    with pytest.raises(IntegrityError, match="content_publication_published_by_fkey"):
+        with db.begin_nested():
+            db.execute(sa.delete(staff).where(staff.c.user_id == publisher))
+
+    assert (
+        db.execute(
+            sa.select(content_publication.c.published_by).where(
+                content_publication.c.item_id == item_id
+            )
+        ).scalar_one()
+        == publisher
+    )
+
+
+def test_deleting_the_og_image_is_refused(db: Connection) -> None:
+    author = add_staff(db)
+    uploader = add_staff(db)
+    item_id = add_item(db, author)
+    version_id = add_version(db, item_id, author)
+    image_id = add_media(db, uploader)
+    add_seo(db, version_id, og_image_id=image_id)
+
+    with pytest.raises(IntegrityError, match="content_seo_og_image_id_fkey"):
+        with db.begin_nested():
+            db.execute(sa.delete(media).where(media.c.id == image_id))
+
+    assert count_rows(db, media, media.c.id == image_id) == 1
+    assert (
+        db.execute(
+            sa.select(content_seo.c.og_image_id).where(
+                content_seo.c.version_id == version_id
+            )
+        ).scalar_one()
+        == image_id
+    )
 
 
 def test_archiving_a_live_item_is_refused_until_unpublished(db: Connection) -> None:
@@ -1169,6 +1380,29 @@ def test_a_version_named_by_a_publication_cannot_be_deleted(db: Connection) -> N
             db.execute(sa.delete(content_version).where(content_version.c.id == version_id))
 
     assert count_rows(db, content_version, content_version.c.id == version_id) == 1
+
+
+def test_a_published_version_survives_unpublishing_as_history(db: Connection) -> None:
+    editor = add_staff(db)
+    item_id = add_item(db, editor)
+    version_id = add_version(db, item_id, editor)
+    add_seo(db, version_id, seo_title="Published title")
+    publish_version(db, version_id, editor)
+    add_publication(db, item_id, version_id, editor)
+
+    # Unpublishing deletes the pointer; the published version and its SEO stay as history.
+    db.execute(
+        sa.delete(content_publication).where(content_publication.c.item_id == item_id)
+    )
+    with pytest.raises(DBAPIError, match=IMMUTABLE_VERSION):
+        with db.begin_nested():
+            db.execute(sa.delete(content_version).where(content_version.c.id == version_id))
+
+    assert count_rows(db, content_version, content_version.c.id == version_id) == 1
+    assert count_rows(db, content_seo, content_seo.c.version_id == version_id) == 1
+    assert (
+        count_rows(db, content_publication, content_publication.c.item_id == item_id) == 0
+    )
 
 
 def test_every_documented_constraint_matches_its_definition(db: Connection) -> None:
