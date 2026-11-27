@@ -488,7 +488,7 @@ begin
     raise exception 'archive page with live section: drafts % -> %', n_before, n_after;
   end if;
 
-  raise notice 'PASS archive page with a live section and no page pointer: 11 archived, pointers gone, one page unpublish audit row, page:/ and routes cache tag, no draft';
+  raise notice 'PASS archive page with a live section and no page pointer: 11 archived, pointers gone, one page unpublish audit row, page:/ and routes cache tag, no new draft';
 
   perform restore_content(v_page, v_admin);
 

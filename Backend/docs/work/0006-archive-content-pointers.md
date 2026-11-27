@@ -34,24 +34,26 @@ authoritative SQL before it is implemented, not the database.
       when the page itself is not live.
 - [ ] `ADMIN.md`'s **Archive** bullet says the same in one clause, without changing any
       other rule.
-- [ ] No table, constraint, index, other function or migration changes; no application or
-      test code changes.
+- [ ] No table, constraint, index, other function or migration changes; no application
+      code changes, and the runbook harness is the only test change.
 - [ ] `uv run ruff check .`, `uv run mypy app`, `uv run pytest -q` and
       `uv run alembic check` are unchanged and quoted; `git diff --check` is silent.
 - [ ] The runbook harness (`docs/runbooks/database-validation.sql`) gains a phase that
       proves the fix: publish only the hero so the page pointer is absent and the hero
       pointer present, archive the page, and assert 11 archived, no pointers, one page
-      `unpublish` audit row, one `{page:/,routes}` revalidation row and no draft. The phase
+      `unpublish` audit row, one `{page:/,routes}` revalidation row and no new draft. The phase
       fails against the pre-fix body from `208188a^` and passes against the corrected one;
       both runs are quoted.
 - [ ] Only `Backend/` changes.
 
 ## Non-goals
 
-- Installing or testing `archive_content`: it is M11. `page_section` does not exist until
-  M5, so the branch cannot be exercised yet.
+- Installing `archive_content` in the application database: it is M11. The runbook harness
+  exercises the documented body now; installation and the application-database test are
+  M11.
 - Changing `_unpublish_internal`, `content_item_archive_guard` or any M4 object.
-- The M11 test itself. It is already required in `PLAN.md` M11.
+- The M11 test in the application database. It repeats the runbook case and is required
+  by `PLAN.md` M11.
 - Patching `~/Work/website-build`; the design workspace syncs from this repository.
 
 ## Plan
@@ -60,6 +62,8 @@ authoritative SQL before it is implemented, not the database.
 | --- | --- |
 | `Backend/docs/DATABASE.md` | The `archive_content` condition and two prose passages |
 | `Backend/docs/ADMIN.md` | One clause in the Archive bullet |
+| `Backend/docs/runbooks/database-validation.sql` | The regression phase for the page-pointer-absent case |
+| `Backend/docs/runbooks/database-validation.md` | The recorded run and its counts |
 | `Backend/docs/work/0006-archive-content-pointers.md` | This file |
 | `Backend/docs/work/README.md` | Index row |
 
@@ -125,11 +129,27 @@ itself has no pointer.
   migration-test list, and noted the concurrent-section-publish caveat by the archive
   guard.
 - Correction to the first entry: the claim that `archive_content` "cannot be tested yet"
-  was wrong. The runbook harness applies every fenced SQL block from `DATABASE.md` to a
-  scratch PostgreSQL and executes the documented function; the new phase is the
-  regression test. M11 still installs it in the application database.
+  was wrong. The runbook harness applies every fenced `sql` block from `DATABASE.md`,
+  except the skipped `cron.schedule` block, to a scratch PostgreSQL and executes the
+  documented function; the new phase is the regression test. M11 still installs it in the
+  application database.
 - Correction: the work index row was not at HEAD when the first commit was made; the
   orchestrator committed it in `cc891c3`.
+
+### 2026-11-27 final correction
+
+- Changed the new phase's PASS wording from "no draft" to "no new draft" in
+  `Backend/docs/runbooks/database-validation.sql`, its recorded output in
+  `Backend/docs/runbooks/database-validation.md`, and the quote in this file. The
+  delete-refusal phase leaves an open draft on the `work` section (`:302-303`), so the
+  pre-archive open-draft count is one; the assertion at `:485-489` compares before and
+  after and proves no new draft. No assertion or other line changed.
+- Corrected the two sentences that said the harness applies "every fenced SQL block" to
+  note the skipped `cron.schedule` block.
+- Re-ran the harness on a fresh `postgres:18` container: `psql` exited `0`, with 18
+  `PASS` notices and five `DO` blocks; the new line is
+  `PASS archive page with a live section and no page pointer: 11 archived, pointers
+  gone, one page unpublish audit row, page:/ and routes cache tag, no new draft`.
 
 ## Decisions made
 
@@ -140,8 +160,9 @@ itself has no pointer.
   the milestone that installs the function; the runbook harness now exercises the
   documented body, and M11 repeats the case in the application database.
 - Proved the fix with the existing documented-SQL harness rather than a new migration
-  test: it already applies every fenced block in `DATABASE.md` and calls
-  `archive_content`, so the new phase fails on the pre-fix body and passes on the fix.
+  test: it already applies every fenced `sql` block in `DATABASE.md`, except the skipped
+  `cron.schedule` block, and calls `archive_content`, so the new phase fails on the
+  pre-fix body and passes on the fix.
 - Left the work index row to the orchestrator; it was committed in `cc891c3`, after this
   task's first commit, so it was not at HEAD then.
 
@@ -201,7 +222,7 @@ Corrected run on a fresh `postgres:18` container:
 
 ```
 ## archive page with a live section and no page pointer
-psql:/tmp/database-validation.sql:500: NOTICE:  PASS archive page with a live section and no page pointer: 11 archived, pointers gone, one page unpublish audit row, page:/ and routes cache tag, no draft
+psql:/tmp/database-validation.sql:500: NOTICE:  PASS archive page with a live section and no page pointer: 11 archived, pointers gone, one page unpublish audit row, page:/ and routes cache tag, no new draft
 DO
 ```
 
@@ -242,6 +263,9 @@ Final application checks before the commit:
   reads `page_section` and `content_publication` without locking the section rows. The
   archive rolls back cleanly and is safe to retry; the harness does not exercise this
   race.
+- The new phase's draft assertion is a delta, not zero: the delete-refusal phase leaves
+  an open draft on the `work` section, so the pre-archive count is one. The PASS wording
+  now says "no new draft"; no assertion changed.
 - `~/Work/website-build` needs to sync `DATABASE.md` and `ADMIN.md`; this repository is
   now ahead. The design workspace is out of bounds for this task.
 

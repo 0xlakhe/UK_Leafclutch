@@ -175,7 +175,7 @@ psql:/tmp/database-validation.sql:409: NOTICE:  PASS archive page: 11 items arch
 psql:/tmp/database-validation.sql:409: NOTICE:  PASS restore page: all 11 flags cleared, nothing live, no new draft, no cache tag
 DO
 ## archive page with a live section and no page pointer
-psql:/tmp/database-validation.sql:500: NOTICE:  PASS archive page with a live section and no page pointer: 11 archived, pointers gone, one page unpublish audit row, page:/ and routes cache tag, no draft
+psql:/tmp/database-validation.sql:500: NOTICE:  PASS archive page with a live section and no page pointer: 11 archived, pointers gone, one page unpublish audit row, page:/ and routes cache tag, no new draft
 DO
 ```
 
