@@ -1914,8 +1914,9 @@ returns trigger
 language plpgsql
 as $$
 begin
-  -- Taken before any row lock: two writers cannot each hold a row the other needs while
-  -- one waits here. The key is constant for the staff write path and the lock ends with
+  -- Taken before the row locks this statement will take, so two writers cannot each hold
+  -- a row the other needs while one waits here. It cannot reorder a lock the caller
+  -- already holds. The key is constant for the staff write path and the lock ends with
   -- the transaction.
   perform pg_advisory_xact_lock(hashtext('staff_last_admin'));
   return null;
@@ -1923,7 +1924,7 @@ end;
 $$;
 
 create trigger staff_lock_writes
-  before update or delete on staff
+  before insert or update or delete on staff
   for each statement execute function lock_staff_writes();
 
 create or replace function enforce_last_admin()
@@ -1970,13 +1971,19 @@ create trigger staff_last_admin
   for each row execute function enforce_last_admin();
 ```
 
-The statement trigger takes a transaction-scoped advisory lock before any row lock, so two
-staff writers serialise instead of forming a lock cycle. The row trigger counts active
-Admins other than the row being changed with a locking read: under READ COMMITTED the
-statement lock already serialises, and under REPEATABLE READ or SERIALIZABLE a concurrent
-committed change raises a serialization failure (`40001`) rather than being missed by the
-snapshot. Demoting the last Admin, deactivating them or deleting them all fail. A second
-Admin must exist first.
+The statement trigger takes a transaction-scoped advisory lock before the row locks its own
+statement takes, so two staff writers serialise instead of forming a lock cycle. It covers
+INSERT as well, because a `created_by` foreign key takes a key-share lock on an Admin row
+before that statement needs the advisory lock. The trigger cannot reorder a lock the caller
+already holds: any staff service must either take
+`pg_advisory_xact_lock(hashtext('staff_last_admin'))` before its first staff row lock or
+retry `40P01` with a bounded backoff (PLAN.md M15). The lock is held to commit, so a long
+staff transaction blocks every other staff writer; keep staff write transactions short. The
+row trigger counts active Admins other than the row being changed with a locking read: under
+READ COMMITTED the statement lock already serialises, and under REPEATABLE READ or
+SERIALIZABLE a concurrent committed change raises a serialization failure (`40001`) rather
+than being missed by the snapshot. Demoting the last Admin, deactivating them or deleting
+them all fail. A second Admin must exist first.
 
 ### Publication and immutability
 

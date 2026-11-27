@@ -4,9 +4,13 @@ The table uses SQLAlchemy operations so `alembic check` compares it with app/mod
 
 The trigger SQL follows Backend/docs/DATABASE.md §Timestamps and the last Admin, with
 deliberate changes dated 27 November 2026: a statement-level `staff_lock_writes` trigger
-takes a transaction-scoped advisory lock before any row lock, and `enforce_last_admin`
-counts with a locking read so REPEATABLE READ and SERIALIZABLE cannot let a concurrent
-removal through. Both changes are in DATABASE.md.
+(insert, update and delete) takes a transaction-scoped advisory lock before the row locks
+taken by that statement, and `enforce_last_admin` counts with a locking read so REPEATABLE
+READ and SERIALIZABLE cannot let a concurrent removal through. The trigger cannot reorder a
+lock the caller already holds: a staff service must take
+`pg_advisory_xact_lock(hashtext('staff_last_admin'))` before its first staff row lock or
+retry `40P01` with a bounded backoff (PLAN.md M15). The lock is held to commit, so staff
+write transactions stay short. All of this is in DATABASE.md.
 
 Revision ID: 0002_staff
 Revises: 0001_extensions_enums
@@ -44,8 +48,9 @@ returns trigger
 language plpgsql
 as $$
 begin
-  -- Taken before any row lock: two writers cannot each hold a row the other needs while
-  -- one waits here. The key is constant for the staff write path and the lock ends with
+  -- Taken before the row locks this statement will take, so two writers cannot each hold
+  -- a row the other needs while one waits here. It cannot reorder a lock the caller
+  -- already holds. The key is constant for the staff write path and the lock ends with
   -- the transaction.
   perform pg_advisory_xact_lock(hashtext('staff_last_admin'));
   return null;
@@ -103,7 +108,7 @@ create trigger staff_set_updated_at
 
 STAFF_LOCK_WRITES_TRIGGER_SQL = """
 create trigger staff_lock_writes
-  before update or delete on staff
+  before insert or update or delete on staff
   for each statement execute function lock_staff_writes();
 """
 

@@ -5,6 +5,7 @@ concurrency, deadlock and isolation tests, which commit deliberately on independ
 connections and clean up.
 """
 
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -336,19 +337,24 @@ def test_the_installed_guard_is_the_locking_read_version(db: Connection) -> None
     ).scalar_one()
     assert "pg_advisory_xact_lock" in lock_definition
 
-    triggers = dict(
-        db.execute(
+    triggers = {
+        name: (is_row, on_insert, on_update, on_delete)
+        for name, is_row, on_insert, on_update, on_delete in db.execute(
             sa.text(
-                "select tgname, (tgtype & 1) = 1 from pg_trigger "
-                "where tgrelid = 'staff'::regclass and not tgisinternal"
+                "select tgname, (tgtype & 1) = 1, (tgtype & 4) = 4, "
+                "(tgtype & 16) = 16, (tgtype & 8) = 8 "
+                "from pg_trigger where tgrelid = 'staff'::regclass and not tgisinternal"
             )
         ).all()
-    )
-    assert triggers["staff_lock_writes"] is False  # statement-level, before row locks
-    assert triggers["staff_last_admin"] is True  # row-level guard
+    }
+    assert triggers["staff_lock_writes"] == (False, True, True, True)
+    assert triggers["staff_last_admin"] == (True, False, True, True)
 
 
 def test_concurrent_deletes_cannot_remove_both_active_admins(database_engine: Engine) -> None:
+    # Each delete's row trigger locks the other Admin in its `for update` count. Without
+    # the statement trigger the two locking reads form a cycle and one transaction dies
+    # with 40P01; with it the second delete waits before its row trigger, then refuses.
     first_id, second_id = commit_two_admins(database_engine)
     first = database_engine.connect()
     second = database_engine.connect()
@@ -375,6 +381,9 @@ def test_concurrent_deletes_cannot_remove_both_active_admins(database_engine: En
 
         assert isinstance(failure, DBAPIError), f"the second delete did not fail: {failure!r}"
         assert LAST_ADMIN in str(failure)
+        sqlstate = getattr(failure.orig, "sqlstate", None)
+        assert sqlstate in {"P0001", "40001"}, f"unexpected sqlstate: {sqlstate}"
+        assert sqlstate != "40P01", "the statement trigger should prevent the deadlock"
         assert count_active_admins(database_engine) == 1
     finally:
         # Release the advisory lock before waiting for the worker, or a failed wait deadlocks.
@@ -387,23 +396,69 @@ def test_concurrent_deletes_cannot_remove_both_active_admins(database_engine: En
         cleanup_committed_staff(database_engine, [first_id, second_id])
 
 
-def test_a_delete_then_an_update_of_the_other_admin_does_not_deadlock(
+def test_two_concurrent_deletes_serialise_without_a_deadlock(
+    database_engine: Engine,
+) -> None:
+    # Both deletes start together. With the statement trigger, one takes the advisory lock,
+    # deletes and commits; the other waits before its row trigger and refuses. Without it,
+    # the two row triggers can lock each other's Admin and the pair can deadlock with
+    # 40P01, so that state is never an acceptable outcome.
+    first_id, second_id = commit_two_admins(database_engine)
+    barrier = threading.Barrier(2)
+    outcomes: dict[str, str | None] = {}
+
+    def delete(name: str, user_id: uuid.UUID) -> None:
+        with database_engine.connect() as connection:
+            try:
+                connection.begin()
+                barrier.wait(timeout=10)
+                connection.execute(sa.delete(staff).where(staff.c.user_id == user_id))
+                connection.commit()
+                outcomes[name] = "committed"
+            except Exception as exc:
+                connection.rollback()
+                outcomes[name] = getattr(getattr(exc, "orig", None), "sqlstate", None)
+
+    threads = [
+        threading.Thread(target=delete, args=("first", first_id), daemon=True),
+        threading.Thread(target=delete, args=("second", second_id), daemon=True),
+    ]
+    try:
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=15)
+        assert not any(thread.is_alive() for thread in threads), "a delete did not finish"
+
+        failures = {name: state for name, state in outcomes.items() if state != "committed"}
+        assert len(failures) == 1, f"expected one refusal, got {outcomes}"
+        sqlstate = next(iter(failures.values()))
+        assert sqlstate in {"P0001", "40001"}, f"unexpected sqlstate: {sqlstate}"
+        assert sqlstate != "40P01", "the statement trigger should prevent the deadlock"
+        assert count_active_admins(database_engine) == 1
+    finally:
+        for thread in threads:
+            thread.join(timeout=15)
+        cleanup_committed_staff(database_engine, [first_id, second_id])
+
+
+def test_an_insert_with_created_by_does_not_deadlock_with_a_delete(
     database_engine: Engine,
 ) -> None:
     first_id, second_id = commit_two_admins(database_engine)
+    editor_id = uuid.uuid4()
+    with database_engine.begin() as setup:
+        setup.execute(sa.insert(auth_users).values(id=editor_id))
+
     first = database_engine.connect()
     second = database_engine.connect()
     failure: Exception | None = None
 
-    def update_second() -> None:
+    def delete_first() -> None:
         nonlocal failure
         try:
             second.begin()
-            second.execute(
-                sa.update(staff)
-                .where(staff.c.user_id == second_id)
-                .values(display_name="from second")
-            )
+            second.execute(sa.delete(staff).where(staff.c.user_id == first_id))
             second.commit()
         except Exception as exc:
             failure = exc
@@ -412,23 +467,38 @@ def test_a_delete_then_an_update_of_the_other_admin_does_not_deadlock(
     pool = ThreadPoolExecutor(max_workers=1)
     try:
         first.begin()
-        first.execute(sa.delete(staff).where(staff.c.user_id == first_id))
-        future = pool.submit(update_second)
-        wait_for_an_advisory_lock_waiter(database_engine)
-        # The second writer is waiting on the statement lock before it takes row B, so this
-        # update of row B cannot wait behind it: no advisory-versus-row lock cycle exists.
+        # The insert takes the advisory lock and a key-share lock on Admin A through
+        # created_by. Without INSERT in the statement trigger, the delete would take the
+        # advisory lock and then wait for A, while this transaction waited for the lock.
         first.execute(
-            sa.update(staff).where(staff.c.user_id == second_id).values(display_name="from first")
+            sa.insert(staff).values(
+                user_id=editor_id,
+                email="editor-c@example.com",
+                display_name="Editor C",
+                role="editor",
+                created_by=first_id,
+            )
+        )
+        future = pool.submit(delete_first)
+        wait_for_an_advisory_lock_waiter(database_engine)
+        first.execute(
+            sa.update(staff)
+            .where(staff.c.user_id == second_id)
+            .values(display_name="from first")
         )
         first.commit()
         future.result(timeout=10)
 
-        assert failure is None, f"the second writer failed: {failure!r}"
+        assert failure is None, f"the delete failed: {failure!r}"
         with database_engine.connect() as check:
-            display_name = check.execute(
-                sa.select(staff.c.display_name).where(staff.c.user_id == second_id)
+            created_by = check.execute(
+                sa.select(staff.c.created_by).where(staff.c.user_id == editor_id)
             ).scalar_one()
-        assert display_name == "from second"
+            first_exists = check.execute(
+                sa.select(sa.func.count()).select_from(staff).where(staff.c.user_id == first_id)
+            ).scalar_one()
+        assert created_by is None  # the committed delete ran ON DELETE SET NULL
+        assert first_exists == 0
         assert count_active_admins(database_engine) == 1
     finally:
         if first.in_transaction():
@@ -437,13 +507,15 @@ def test_a_delete_then_an_update_of_the_other_admin_does_not_deadlock(
         pool.shutdown(wait=True)
         second.rollback()
         second.close()
-        cleanup_committed_staff(database_engine, [first_id, second_id])
+        cleanup_committed_staff(database_engine, [first_id, second_id, editor_id])
 
 
 @pytest.mark.parametrize("isolation_level", ["REPEATABLE READ", "SERIALIZABLE"])
 def test_the_guard_holds_at_stronger_isolation(
     database_engine: Engine, isolation_level: str
 ) -> None:
+    # REPEATABLE READ is what pins the locking read: SERIALIZABLE can also catch the
+    # conflict through SSI without it. Both must leave exactly one active Admin.
     first_id, second_id = commit_two_admins(database_engine)
     first = database_engine.connect()
     second = database_engine.connect()

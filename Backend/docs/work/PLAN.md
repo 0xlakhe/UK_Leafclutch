@@ -127,6 +127,13 @@ last-Admin protection. A `legal_page` or `settings` kind is Admin-only on every 
 page and preview path, and the three sign-in endpoints accept `aal1` before `aal2` is
 reached.
 
+Every staff write must either take `pg_advisory_xact_lock(hashtext('staff_last_admin'))`
+before its first staff row lock or retry `40P01` with a bounded backoff. The
+`staff_lock_writes` trigger orders the locks its own statement takes, but it cannot reorder
+a lock the service already holds, so a pre-held `SELECT ... FOR UPDATE` can still form a
+deadlock with the trigger. The advisory lock is held to commit, so staff write transactions
+stay short.
+
 Exit: a signed-out, expired, MFA-less and downgraded role each get the documented status;
 an Editor gets `403` naming a legal page or settings; a deactivated staff member is
 refused on the next request.
