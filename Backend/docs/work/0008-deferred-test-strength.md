@@ -90,6 +90,30 @@ No migration content changes. The suite still applies `alembic upgrade head` onc
   every staff row is an Editor and each FK uses its own row, so `enforce_last_admin` never
   fires first. All twelve new cases passed on the first run: no probe contradicted
   `DATABASE.md`. `tests/test_content_spine.py` is 108 tests; the suite is 338.
+- **2026-11-28 — Step 3: page-section real commits and exact function bodies.**
+  `Backend/tests/test_page_sections.py` gains `committed_connection`, a context manager on
+  a connection from `database_engine`: it commits an Editor for `created_by` (an Editor
+  never trips `enforce_last_admin`) and, in `finally`, deletes the content items the case
+  registered — the cascades clear the versions and section rows — then the staff row, then
+  the auth row. Seven real-commit cases: a changed `page_id`, `section_key` or
+  `sort_order` reinsert fails at `COMMIT` with `page section item .* changed its
+  page_section row` and the rollback leaves the original row; an identical
+  delete-and-reinsert commits; a section item inserted with its row and deleted in the
+  same transaction commits without `needs a page_section_row`; two sections with draft
+  versions deleted and then their landing page deleted commits; and a committed draft
+  `content_version` moved to a project item is refused with `a version cannot move between
+  items` (that trigger is immediate, so on the real connection the refusal is at the
+  UPDATE). The cleanup leaves no row: `content_item`, `content_version`, `page_section`,
+  `section_version` and `staff` counted 0 after the run, and the empty-state test passes
+  again on the next run. The six-case fragment parametrisation of
+  `test_the_installed_section_functions_pin_their_bodies` became one test comparing the
+  exact `pg_proc.prosrc` of the seven M5 functions with the migration's `ASSERT_..._SQL`
+  constants, loaded through `importlib.util.spec_from_file_location`. The body is the text
+  between the first `as $$` and the closing `$$`; whitespace is collapsed and case is
+  kept. The test asserts the map holds seven functions and that the installed set equals
+  the map. The older standalone fragment pin for `assert_page_section_row()` stays: it is
+  a separate message-level check and the brief scoped the replacement to the parametrised
+  loop. `tests/test_page_sections.py` is 114 tests; the suite is 340.
 
 ## Decisions made
 
@@ -110,6 +134,22 @@ No migration content changes. The suite still applies `alembic upgrade head` onc
 - **Staff FK probes use Editors.** Every referenced staff row is an Editor, and the
   `content_item` and `content_version` cases use a separate row per foreign key, so the
   delete reaches the named restrict FK rather than `enforce_last_admin`.
+- **The seven M5 bodies are pinned against the migration, not `DATABASE.md`.** The
+  migration's `ASSERT_..._SQL` constants are what `alembic upgrade head` installs, so they
+  are the executable source; `DATABASE.md` §Section items and §Section copy carry the same
+  SQL. Comparing `pg_proc.prosrc` with the constant catches a change to either the
+  installed function or the migration text, and collapsing whitespace only keeps case,
+  punctuation and clause order in the comparison. `prosrc` is read for the function in the
+  `public` schema, so a function in another schema cannot satisfy the pin.
+- **The real-commit cases clean up by content item, not by TRUNCATE.** Each case registers
+  every content item id it creates; `committed_connection` deletes those items first (the
+  version, section and child rows cascade), then the staff row, then the auth row. Deleting
+  the page item alone would orphan its section items and fail the deferred
+  `page_section_row_kept` check, which is why the section items are registered and deleted
+  in the same statement.
+- **The older `assert_page_section_row()` fragment test stays.** The exact-body pin
+  subsumes it, but the brief replaced the parametrised fragment loop only; removing a
+  passing test was outside the slice.
 
 ## Files changed
 
@@ -120,6 +160,10 @@ No migration content changes. The suite still applies `alembic upgrade head` onc
   deletion with SEO and after unpublishing, the live-pointer item cascade, restore and
   half-clear archive flags, and the staff/media restrict foreign keys, plus the local
   `media_values`/`add_media` helper
+- `Backend/tests/test_page_sections.py` — the seven real-commit cases through
+  `committed_connection`, and the exact `pg_proc.prosrc` comparison for the seven M5
+  functions against `0005_page_sections.py`'s SQL constants, replacing the six-case
+  fragment parametrisation
 - `Backend/docs/work/0008-deferred-test-strength.md` — this log
 
 ## Migrations
@@ -266,14 +310,132 @@ $ uv run pytest -q tests/test_content_spine.py -k "with_seo_cannot or live_point
 
 All passed; no probe failed or contradicted the document.
 
+Step 3 runs on 2026-11-28 (same PostgreSQL 18.7 target):
+
+```
+$ uv run ruff check .
+All checks passed!
+
+$ uv run mypy app
+Success: no issues found in 6 source files
+```
+
+```
+$ uv run pytest -q
+........................................................................ [ 21%]
+........................................................................ [ 42%]
+........................................................................ [ 63%]
+........................................................................ [ 84%]
+....................................................                     [100%]
+340 passed, 4 warnings in 1.57s
+
+$ uv run pytest -q --import-mode=importlib
+........................................................................ [ 21%]
+........................................................................ [ 42%]
+........................................................................ [ 63%]
+........................................................................ [ 84%]
+....................................................                     [100%]
+340 passed, 4 warnings in 1.51s
+
+$ uv run alembic check
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+INFO  [alembic.runtime.plugins] setting up autogenerate plugin alembic.autogenerate.schemas
+INFO  [alembic.runtime.plugins] setting up autogenerate plugin alembic.autogenerate.tables
+INFO  [alembic.runtime.plugins] setting up autogenerate plugin alembic.autogenerate.types
+INFO  [alembic.runtime.plugins] setting up autogenerate plugin alembic.autogenerate.constraints
+INFO  [alembic.runtime.plugins] setting up autogenerate plugin alembic.autogenerate.defaults
+INFO  [alembic.runtime.plugins] setting up autogenerate plugin alembic.autogenerate.comments
+No new upgrade operations detected.
+```
+
+`tests/test_page_sections.py` alone after the change:
+
+```
+$ uv run pytest -q tests/test_page_sections.py
+........................................................................ [ 63%]
+..........................................                               [100%]
+114 passed, 1 warning in 0.74s
+```
+
+The new cases (seven real-commit plus the single exact-body pin) ran:
+
+```
+$ uv run pytest tests/test_page_sections.py -v -k "at_commit or identical_page_section \
+    or created_and_deleted or both_sections or project_item or pin_their_bodies"
+tests/test_page_sections.py::test_a_page_section_item_created_and_deleted_in_one_transaction_passes PASSED [ 11%]
+tests/test_page_sections.py::test_the_installed_section_functions_pin_their_bodies PASSED [ 22%]
+tests/test_page_sections.py::test_a_changed_page_section_reinsert_fails_at_commit[page_id] PASSED [ 33%]
+tests/test_page_sections.py::test_a_changed_page_section_reinsert_fails_at_commit[section_key] PASSED [ 44%]
+tests/test_page_sections.py::test_a_changed_page_section_reinsert_fails_at_commit[sort_order] PASSED [ 55%]
+tests/test_page_sections.py::test_an_identical_page_section_reinsert_commits PASSED [ 66%]
+tests/test_page_sections.py::test_a_page_section_created_and_deleted_in_one_commit_passes PASSED [ 77%]
+tests/test_page_sections.py::test_deleting_both_sections_then_their_page_commits PASSED [ 88%]
+tests/test_page_sections.py::test_a_draft_version_cannot_move_to_a_project_item PASSED [100%]
+9 passed, 105 deselected, 1 warning in 0.24s
+```
+
+The `-k` pattern also matches the older savepoint create-and-delete case, which is why
+the run reports nine.
+
+After the suite, no committed row was left behind (`select count(*)` on each table):
+
+```
+content_item: 0
+content_version: 0
+page_section: 0
+section_version: 0
+staff: 0
+```
+
+**Mutation 3 — regrouped `assert_page_section_position` body.** On a fresh scratch
+database (`leafclutch_scratch_body_test`, created empty and then upgraded by the suite's
+own `alembic upgrade head`), the installed function was replaced by a semantically
+equivalent body that swaps the four `or` clauses. The exact pin fails while all four
+behavioural cases still pass, which is the gap the exact pin closes:
+
+```
+$ TEST_DATABASE_URL=<scratch> uv run pytest -q \
+    tests/test_page_sections.py::test_the_installed_section_functions_pin_their_bodies
+E           AssertionError: the installed assert_page_section_position() body differs from
+ASSERT_PAGE_SECTION_POSITION_SQL in 0005
+E           assert 'begin if new...urn new; end;' == 'begin if new...urn new; end;'
+E             Skipping 89 identical trailing characters in diff, use -v to show
+E             - begin if new.item_id is distinct from old.item_id or new.page_id is
+distinct from old.page_id or new.section_key is distinct from old.section_key or
+new.sort_order is distinct from old.sort_order then rai
+E             + begin if new.sort_order is distinct from old.sort_order or new.section_key
+is distinct from old.section_key or new.page_id is distinct from old.page_id or
+new.item_id is distinct from old.item_id then rai
+FAILED tests/test_page_sections.py::test_the_installed_section_functions_pin_their_bodies
+1 failed, 1 warning in 0.20s
+
+$ TEST_DATABASE_URL=<scratch> uv run pytest -q \
+    tests/test_page_sections.py::test_a_page_section_identity_or_position_cannot_change
+4 passed, 1 warning in 0.19s
+```
+
+The correct body was restored from `ASSERT_PAGE_SECTION_POSITION_SQL` (the pin passes
+again) and the scratch database was dropped. The real `leafclutch_test` and `leafclutch`
+databases were not altered.
+
 ## Review
 
 ## Docs updated
 
+- No document is invalidated: this is test-only work, and `DATABASE.md` §Section items and
+  §Section copy already describe the committed behaviour and the seven guard functions.
+  `DATABASE.md`, `CONTRACT.md`, `ADMIN.md` and OpenAPI are unchanged.
+- `Backend/tests/test_page_sections.py`'s module docstring now says which cases commit
+  through `database_engine` and why.
+
 ## Remaining
 
-- Step 3 of the plan — the page-section real-commit and exact-body pins — is a later
-  commit of task 0008.
+- Step 3 of the plan is closed: `tests/test_page_sections.py` commits its guard probes and
+  pins the seven M5 function bodies exactly.
+- The M3/M4 function bodies stay fragment-pinned, as `## Plan` records: their SQL is
+  inline in revisions that were already pushed, and duplicating the bodies would add no
+  branch coverage beyond the existing mutation proofs.
 - The M4 `## Remaining` item L1 is closed by the Step 2 pins. The 0004 work file is not
   edited, per the brief.
 - `media_bucket` and `media_mime_length` still have no behavioural test; their installed
@@ -286,3 +448,6 @@ All passed; no probe failed or contradicted the document.
 ## Open questions
 
 ## Not verified
+
+- The real-commit and exact-body proofs ran on the local PostgreSQL 18.7 container only;
+  nothing was run against Supabase or staging.

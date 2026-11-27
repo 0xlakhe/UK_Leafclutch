@@ -1,25 +1,34 @@
 """The page section, list and reference tables' constraints, guards and cascade rules.
 
-Every test runs inside the ``db`` transaction and is rolled back by the fixture. The
+Most tests run inside the ``db`` transaction and are rolled back by the fixture. The
 fixtures insert the auth user and staff rows the foreign keys reference, then the items,
-versions, section and child rows the case needs. No row is committed.
+versions, section and child rows the case needs; no row is committed. The real-commit
+tests instead open their own connection through ``database_engine``, commit, and delete
+what they wrote in ``finally``, because a deferred constraint trigger only fires at a
+real commit.
 
-The deferred constraint trigger is exercised by switching it to immediate inside a
+The deferred constraint trigger is also exercised by switching it to immediate inside a
 savepoint: the savepoint's rollback keeps the outer test transaction clean, and the raised
 ``DBAPIError`` is the failure a real commit would produce.
 
 The SQL is pinned twice: behaviour is exercised through inserts, updates and deletes, and
 the installed constraint, index, trigger and function definitions are compared with
 Backend/docs/DATABASE.md so a weakened expression fails a test even where a behaviour case
-happens not to reach it.
+happens not to reach it. The seven section guard functions are compared by their exact
+installed body, loaded from the migration's own SQL constants.
 """
 
+import importlib.util
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
+from pathlib import Path
+from types import ModuleType
 
 import pytest
 import sqlalchemy as sa
-from sqlalchemy import Connection
+from sqlalchemy import Connection, Engine
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from app.models import (
@@ -549,6 +558,29 @@ EXPECTED_TRIGGERS: dict[str, tuple[str, bool, bool, bool, bool, bool, bool, bool
     ),
 }
 
+# The seven M5 guard functions and the migration constant each body is written in. The
+# installed body is compared exactly after collapsing whitespace; case, punctuation and
+# clause order stay, so a regrouped body or a changed message fails even where a behaviour
+# case still passes. The M3/M4 functions keep their fragment pins: their bodies live
+# inline in revisions that were already pushed, and the exact comparison adds no branch
+# coverage beyond their existing mutation proofs (task 0008's Plan records the reason).
+SECTION_FUNCTION_BODIES: dict[str, str] = {
+    "assert_page_section_row": "ASSERT_PAGE_SECTION_ROW_SQL",
+    "assert_page_section_item_kept": "ASSERT_PAGE_SECTION_ITEM_KEPT_SQL",
+    "assert_page_section_position": "ASSERT_PAGE_SECTION_POSITION_SQL",
+    "assert_section_version_key": "ASSERT_SECTION_VERSION_KEY_SQL",
+    "prevent_version_item_move": "PREVENT_VERSION_ITEM_MOVE_SQL",
+    "assert_section_child": "ASSERT_SECTION_CHILD_SQL",
+    "assert_section_version_item": "ASSERT_SECTION_VERSION_ITEM_SQL",
+}
+
+SECTION_MIGRATION = (
+    Path(__file__).resolve().parent.parent
+    / "migrations"
+    / "versions"
+    / "0005_page_sections.py"
+)
+
 # Every section key with a row that uses only the columns its key allows. About also needs
 # a media row, inserted by the test.
 SECTION_COPY: list[tuple[str, dict[str, str], bool]] = [
@@ -616,6 +648,29 @@ def normalise(definition: str) -> str:
 def normalise_constraint(definition: str) -> str:
     """Lower-case and collapse whitespace; PostgreSQL's parentheses are part of the pin."""
     return " ".join(definition.lower().split())
+
+
+def collapse_spacing(definition: str) -> str:
+    """Collapse whitespace only; case and clause order stay, so a body change is visible."""
+    return " ".join(definition.split())
+
+
+def load_section_migration() -> ModuleType:
+    """Import the 0005 revision by path; its filename is not a module name."""
+    spec = importlib.util.spec_from_file_location(
+        "migration_0005_page_sections", SECTION_MIGRATION
+    )
+    assert spec is not None and spec.loader is not None, (
+        f"the 0005 revision is missing at {SECTION_MIGRATION}"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def function_body(definition: str) -> str:
+    """The plpgsql text between the first ``as $$`` and the closing ``$$``."""
+    return definition.split("as $$", 1)[1].rsplit("$$", 1)[0]
 
 
 def add_staff(db: Connection) -> uuid.UUID:
@@ -811,6 +866,46 @@ def count_rows(db: Connection, table: sa.Table, *conditions: object) -> int:
     if conditions:
         statement = statement.where(*conditions)
     return db.execute(statement).scalar_one()
+
+
+@contextmanager
+def committed_connection(
+    engine: Engine,
+) -> Iterator[tuple[Connection, uuid.UUID, list[uuid.UUID]]]:
+    """A connection that really commits, with its Editor and content items removed in finally.
+
+    Yields the connection, an Editor's user id for ``created_by`` and the list the caller
+    appends every content item id to. An Editor never trips ``enforce_last_admin``, and the
+    cleanup deletes the content items first so their cascades clear the versions and section
+    rows before the staff row loses its ``created_by`` reference.
+    """
+    connection = engine.connect()
+    user_id = uuid.uuid4()
+    item_ids: list[uuid.UUID] = []
+    try:
+        with connection.begin():
+            connection.execute(sa.insert(auth_users).values(id=user_id))
+            connection.execute(
+                sa.insert(staff).values(
+                    user_id=user_id,
+                    email=f"page-section-commit-{user_id}@example.com",
+                    display_name="Committed section editor",
+                    role="editor",
+                )
+            )
+        yield connection, user_id, item_ids
+    finally:
+        try:
+            if connection.in_transaction():
+                connection.rollback()
+            with connection.begin():
+                connection.execute(
+                    sa.delete(content_item).where(content_item.c.id.in_(item_ids))
+                )
+                connection.execute(sa.delete(staff).where(staff.c.user_id == user_id))
+                connection.execute(sa.delete(auth_users).where(auth_users.c.id == user_id))
+        finally:
+            connection.close()
 
 
 def test_the_section_tables_start_empty(db: Connection) -> None:
@@ -2023,115 +2118,200 @@ def test_the_installed_assert_page_section_row_pins_its_message(db: Connection) 
         )
 
 
-@pytest.mark.parametrize(
-    ("function", "fragments"),
-    [
-        (
-            "assert_section_child()",
-            [
-                "select section_key into v_key",
-                "from section_version",
-                "where version_id = new.version_id",
-                "if v_key is null or v_key::text <> tg_argv[0] then",
-                "raise exception 'row belongs to section %, not %', v_key, tg_argv[0]",
-                "return new",
-            ],
-        ),
-        (
-            "assert_page_section_item_kept()",
-            [
-                "if not exists (",
-                "select 1 from content_item where id = old.item_id "
-                "and kind = 'page_section'",
-                "select page_id, section_key, sort_order",
-                "if not found then",
-                "raise exception 'page section item % lost its page_section row', "
-                "old.item_id",
-                "if v_page_id is not distinct from old.page_id",
-                "and v_section_key is not distinct from old.section_key",
-                "and v_sort_order is not distinct from old.sort_order then",
-                "raise exception 'page section item % changed its page_section row', "
-                "old.item_id",
-            ],
-        ),
-        (
-            "assert_page_section_position()",
-            [
-                "if new.item_id is distinct from old.item_id",
-                "or new.page_id is distinct from old.page_id",
-                "or new.section_key is distinct from old.section_key",
-                "or new.sort_order is distinct from old.sort_order then",
-                "raise exception 'page_section identity and position cannot change'",
-                "return new",
-            ],
-        ),
-        (
-            "assert_section_version_key()",
-            [
-                "if tg_op = 'update' and new.section_key <> old.section_key then",
-                "raise exception 'section version key cannot change'",
-                "select ci.kind, ps.section_key",
-                "left join page_section ps on ps.item_id = cv.item_id",
-                "if v_kind is null or v_kind <> 'page_section' then",
-                "raise exception 'section version belongs to a page section'",
-                "raise exception 'section item has no page_section row'",
-                "if v_key <> new.section_key then",
-                "raise exception 'section version key % does not match its section %',",
-                "new.section_key, v_key",
-                "return new",
-            ],
-        ),
-        (
-            "prevent_version_item_move()",
-            [
-                "if new.item_id <> old.item_id then",
-                "raise exception 'a version cannot move between items'",
-                "return new",
-            ],
-        ),
-        (
-            "assert_section_version_item()",
-            [
-                "v_version := case when tg_op = 'delete' then old.version_id else "
-                "new.version_id end",
-                "v_item_kind := case when tg_op = 'delete' then old.item_kind else "
-                "new.item_kind end",
-                "if tg_op = 'update' and (old.version_id <> new.version_id or "
-                "old.item_id <> new.item_id) then",
-                "raise exception 'a section reference cannot move between versions or "
-                "items'",
-                "select cv.status, ci.kind, ps.section_key",
-                "left join page_section ps on ps.item_id = cv.item_id",
-                "raise exception 'references belong to a page section version'",
-                "raise exception 'published section version is immutable'",
-                "raise exception 'section item has no page_section row'",
-                "if v_key = 'services' and v_item_kind = 'service_group' then",
-                "elsif v_key = 'work' and v_item_kind = 'project' then",
-                "elsif v_key = 'proof' and v_item_kind = 'proof_figure' then",
-                "elsif v_key = 'testimonials' and v_item_kind = 'testimonial' then",
-                "raise exception 'section % cannot reference a %', v_key, v_item_kind",
-            ],
-        ),
-    ],
-    ids=[
-        "assert_section_child",
-        "assert_page_section_item_kept",
-        "assert_page_section_position",
-        "assert_section_version_key",
-        "prevent_version_item_move",
-        "assert_section_version_item",
-    ],
-)
-def test_the_installed_section_functions_pin_their_bodies(
-    db: Connection, function: str, fragments: list[str]
-) -> None:
-    definition = db.execute(
-        sa.text("select pg_get_functiondef(cast(:function as regprocedure))"),
-        {"function": function},
-    ).scalar_one()
-    normalised = normalise(definition)
+def test_the_installed_section_functions_pin_their_bodies(db: Connection) -> None:
+    migration = load_section_migration()
+    assert len(SECTION_FUNCTION_BODIES) == 7
 
-    for fragment in fragments:
-        assert normalise(fragment) in normalised, (
-            f"the installed {function} is missing: {fragment}"
+    installed = dict(
+        db.execute(
+            sa.text(
+                "select p.proname::text, p.prosrc from pg_proc p "
+                "join pg_namespace n on n.oid = p.pronamespace "
+                "where n.nspname = 'public' and p.proname::text in :names"
+            ).bindparams(sa.bindparam("names", expanding=True)),
+            {"names": list(SECTION_FUNCTION_BODIES)},
+        ).all()
+    )
+    assert set(installed) == set(SECTION_FUNCTION_BODIES)
+
+    for function, constant in SECTION_FUNCTION_BODIES.items():
+        expected = collapse_spacing(function_body(getattr(migration, constant)))
+        assert collapse_spacing(installed[function]) == expected, (
+            f"the installed {function}() body differs from {constant} in 0005"
         )
+
+
+# The real-commit cases below run outside the rolled-back ``db`` fixture. A deferred
+# constraint trigger only fires at COMMIT, so these prove what the savepoint cases can only
+# imitate, and the cleanup in ``committed_connection`` keeps the suite table-empty.
+@pytest.mark.parametrize("column", ["page_id", "section_key", "sort_order"])
+def test_a_changed_page_section_reinsert_fails_at_commit(
+    database_engine: Engine, column: str
+) -> None:
+    with committed_connection(database_engine) as (connection, editor, item_ids):
+        with connection.begin():
+            page_id = add_page(connection, editor)
+            item_ids.append(page_id)
+            _, item_id = add_section(connection, editor, "hero", 0, page_id)
+            item_ids.append(item_id)
+            replacement_page = add_page(connection, editor)
+            item_ids.append(replacement_page)
+
+        row: dict[str, object] = {
+            "item_id": item_id,
+            "page_id": page_id,
+            "section_key": "hero",
+            "sort_order": 0,
+        }
+        row[column] = {
+            "page_id": replacement_page,
+            "section_key": "contact",
+            "sort_order": 1,
+        }[column]
+
+        transaction = connection.begin()
+        connection.execute(
+            sa.delete(page_section).where(page_section.c.item_id == item_id)
+        )
+        connection.execute(sa.insert(page_section).values(**row))
+        with pytest.raises(DBAPIError, match=PAGE_SECTION_CHANGED):
+            transaction.commit()
+        connection.rollback()
+
+        stored = connection.execute(
+            sa.select(
+                page_section.c.page_id,
+                page_section.c.section_key,
+                page_section.c.sort_order,
+            ).where(page_section.c.item_id == item_id)
+        ).one()
+        assert stored == (page_id, "hero", 0)
+
+
+def test_an_identical_page_section_reinsert_commits(database_engine: Engine) -> None:
+    with committed_connection(database_engine) as (connection, editor, item_ids):
+        with connection.begin():
+            page_id = add_page(connection, editor)
+            item_ids.append(page_id)
+            _, item_id = add_section(connection, editor, "hero", 0, page_id)
+            item_ids.append(item_id)
+
+        with connection.begin():
+            connection.execute(
+                sa.delete(page_section).where(page_section.c.item_id == item_id)
+            )
+            connection.execute(
+                sa.insert(page_section).values(
+                    item_id=item_id,
+                    page_id=page_id,
+                    section_key="hero",
+                    sort_order=0,
+                )
+            )
+
+        stored = connection.execute(
+            sa.select(
+                page_section.c.page_id,
+                page_section.c.section_key,
+                page_section.c.sort_order,
+            ).where(page_section.c.item_id == item_id)
+        ).one()
+        assert stored == (page_id, "hero", 0)
+
+
+def test_a_page_section_created_and_deleted_in_one_commit_passes(
+    database_engine: Engine,
+) -> None:
+    with committed_connection(database_engine) as (connection, editor, item_ids):
+        with connection.begin():
+            page_id = add_page(connection, editor)
+            item_ids.append(page_id)
+            item_id = add_item(connection, editor, kind="page_section")
+            item_ids.append(item_id)
+            connection.execute(
+                sa.insert(page_section).values(
+                    item_id=item_id,
+                    page_id=page_id,
+                    section_key="hero",
+                    sort_order=0,
+                )
+            )
+            connection.execute(sa.delete(content_item).where(content_item.c.id == item_id))
+
+        # Both deferred events reach the commit, but by then the content item is gone, so
+        # the insert guard skips it and the row-kept guard has no page_section item.
+        assert count_rows(connection, content_item, content_item.c.id == item_id) == 0
+        assert count_rows(connection, page_section, page_section.c.item_id == item_id) == 0
+
+
+def test_deleting_both_sections_then_their_page_commits(database_engine: Engine) -> None:
+    with committed_connection(database_engine) as (connection, editor, item_ids):
+        with connection.begin():
+            page_id = add_page(connection, editor)
+            item_ids.append(page_id)
+            section_ids: list[uuid.UUID] = []
+            for section_key, sort_order in (("hero", 0), ("proof", 1)):
+                _, item_id = add_section(
+                    connection, editor, section_key, sort_order, page_id
+                )
+                item_ids.append(item_id)
+                section_ids.append(item_id)
+                version_id = add_version(connection, item_id, editor)
+                connection.execute(
+                    sa.insert(section_version).values(
+                        version_id=version_id, section_key=section_key
+                    )
+                )
+
+            connection.execute(
+                sa.delete(content_item).where(content_item.c.id.in_(section_ids))
+            )
+            connection.execute(sa.delete(content_item).where(content_item.c.id == page_id))
+
+        # The section items go first so the deferred row-kept events see them gone at the
+        # commit; the page delete then has no section row left to orphan.
+        assert count_rows(connection, content_item, content_item.c.id == page_id) == 0
+        assert count_rows(connection, page_section, page_section.c.page_id == page_id) == 0
+        assert (
+            count_rows(
+                connection,
+                content_version,
+                content_version.c.item_id.in_(section_ids),
+            )
+            == 0
+        )
+
+
+def test_a_draft_version_cannot_move_to_a_project_item(database_engine: Engine) -> None:
+    # ``prevent_version_item_move`` is an immediate trigger, so the refusal is raised by the
+    # UPDATE on this real connection before any commit is reached.
+    with committed_connection(database_engine) as (connection, editor, item_ids):
+        with connection.begin():
+            page_id = add_page(connection, editor)
+            item_ids.append(page_id)
+            _, item_id = add_section(connection, editor, "about", 0, page_id)
+            item_ids.append(item_id)
+            version_id = add_version(connection, item_id, editor)
+            connection.execute(
+                sa.insert(section_version).values(
+                    version_id=version_id, section_key="about"
+                )
+            )
+            project_id = add_item(
+                connection, editor, kind="project", slug=f"commit-{uuid.uuid4()}"
+            )
+            item_ids.append(project_id)
+
+        with pytest.raises(DBAPIError, match=VERSION_MOVE):
+            with connection.begin():
+                connection.execute(
+                    sa.update(content_version)
+                    .where(content_version.c.id == version_id)
+                    .values(item_id=project_id)
+                )
+
+        owner = connection.execute(
+            sa.select(content_version.c.item_id).where(content_version.c.id == version_id)
+        ).scalar_one()
+        assert owner == item_id
+        assert count_rows(connection, content_item, content_item.c.id == project_id) == 1
