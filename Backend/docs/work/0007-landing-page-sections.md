@@ -36,7 +36,7 @@ The guards installed here:
 
 - [ ] `0005_page_sections` creates, with every column, default, constraint and index from
       `DATABASE.md`:
-      - `page_section` (§Section items, `:586-609`): the four checks, both composite
+      - `page_section` (§Section items): the three checks, both composite
         foreign keys, both uniques, the primary key and `page_section_page_idx`;
       - `section_version` (§Section copy, `:649-712`): all twelve checks, the primary key
         and the `content_version` cascade;
