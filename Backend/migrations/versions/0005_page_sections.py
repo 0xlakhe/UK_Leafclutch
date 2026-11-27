@@ -70,9 +70,12 @@ returns trigger
 language plpgsql
 as $$
 begin
-  if new.kind = 'page_section' and not exists (
-    select 1 from page_section where item_id = new.id
-  ) then
+  if exists (
+       select 1 from content_item where id = new.id and kind = 'page_section'
+     )
+     and not exists (
+       select 1 from page_section where item_id = new.id
+     ) then
     raise exception 'page section item % needs a page_section row', new.id;
   end if;
 
@@ -105,16 +108,33 @@ create or replace function assert_page_section_item_kept()
 returns trigger
 language plpgsql
 as $$
+declare
+  v_page_id uuid;
+  v_section_key page_section_key;
+  v_sort_order integer;
 begin
-  if exists (
+  if not exists (
        select 1 from content_item where id = old.item_id and kind = 'page_section'
-     )
-     and not exists (
-       select 1 from page_section where item_id = old.item_id
      ) then
+    return null;
+  end if;
+
+  select page_id, section_key, sort_order
+    into v_page_id, v_section_key, v_sort_order
+  from page_section
+  where item_id = old.item_id;
+
+  if not found then
     raise exception 'page section item % lost its page_section row', old.item_id;
   end if;
-  return null;
+
+  if v_page_id is not distinct from old.page_id
+     and v_section_key is not distinct from old.section_key
+     and v_sort_order is not distinct from old.sort_order then
+    return null;
+  end if;
+
+  raise exception 'page section item % changed its page_section row', old.item_id;
 end;
 $$;
 """

@@ -618,9 +618,12 @@ returns trigger
 language plpgsql
 as $$
 begin
-  if new.kind = 'page_section' and not exists (
-    select 1 from page_section where item_id = new.id
-  ) then
+  if exists (
+       select 1 from content_item where id = new.id and kind = 'page_section'
+     )
+     and not exists (
+       select 1 from page_section where item_id = new.id
+     ) then
     raise exception 'page section item % needs a page_section row', new.id;
   end if;
 
@@ -649,16 +652,33 @@ create or replace function assert_page_section_item_kept()
 returns trigger
 language plpgsql
 as $$
+declare
+  v_page_id uuid;
+  v_section_key page_section_key;
+  v_sort_order integer;
 begin
-  if exists (
+  if not exists (
        select 1 from content_item where id = old.item_id and kind = 'page_section'
-     )
-     and not exists (
-       select 1 from page_section where item_id = old.item_id
      ) then
+    return null;
+  end if;
+
+  select page_id, section_key, sort_order
+    into v_page_id, v_section_key, v_sort_order
+  from page_section
+  where item_id = old.item_id;
+
+  if not found then
     raise exception 'page section item % lost its page_section row', old.item_id;
   end if;
-  return null;
+
+  if v_page_id is not distinct from old.page_id
+     and v_section_key is not distinct from old.section_key
+     and v_sort_order is not distinct from old.sort_order then
+    return null;
+  end if;
+
+  raise exception 'page section item % changed its page_section row', old.item_id;
 end;
 $$;
 
@@ -689,10 +709,13 @@ create trigger page_section_immutable
 
 The API inserts the item and its `page_section` row in one transaction; the deferred
 constraint trigger fails the commit if it forgets the row, and it fires again on a kind
-change, so an item cannot become a `page_section` without one. The invariant is two-sided:
-`page_section_row_kept` is also deferred to the commit, and it fails when a deleted row's
-item is still a `page_section` and no replacement row exists, so a direct delete and a
-landing-page cascade that would orphan its sections are refused, while a
+change, so an item cannot become a `page_section` without one. The check reads the item's
+current state, not the queued event, so an item created and deleted in the same transaction
+is consistent at the commit and passes. The invariant is two-sided: `page_section_row_kept`
+is also deferred to the commit, and it fails when a deleted row's item is still a
+`page_section`. It requires the replacement row to be identical — same `page_id`,
+`section_key` and `sort_order` — so a direct delete, a changed reinsert and a landing-page
+cascade that would orphan its sections are all refused, while an identical
 delete-and-reinsert in one transaction passes. An item that already has versions cannot
 leave the `page_section` kind at all, even after its row is deleted, because those versions
 would be left without a section. `assert_page_section_position` freezes the four identity

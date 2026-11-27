@@ -46,6 +46,7 @@ REFERENCE_NOT_SECTION = "references belong to a page section version"
 PUBLISHED_SECTION = "published section version is immutable"
 SECTION_ITEM_MISSING = "section item has no page_section row"
 PAGE_SECTION_LOST = "page section item .* lost its page_section row"
+PAGE_SECTION_CHANGED = "page section item .* changed its page_section row"
 PAGE_SECTION_POSITION = "page_section identity and position cannot change"
 SECTION_VERSION_KEY_MOVED = "section version key cannot change"
 SECTION_VERSION_WRONG_ITEM = "section version belongs to a page section"
@@ -978,12 +979,39 @@ def test_deleting_the_sections_then_the_landing_page_succeeds(db: Connection) ->
 
     for item_id in (hero_id, proof_id):
         db.execute(sa.delete(content_item).where(content_item.c.id == item_id))
-    assert count_rows(db, page_section, page_section.c.page_id == page_id) == 0
 
     db.execute(sa.delete(content_item).where(content_item.c.id == page_id))
-    db.execute(sa.text("set constraints page_section_row_kept immediate"))
+    db.execute(
+        sa.text(
+            "set constraints content_item_page_section_row, "
+            "page_section_row_kept immediate"
+        )
+    )
 
     assert count_rows(db, content_item, content_item.c.id == page_id) == 0
+    assert count_rows(db, page_section, page_section.c.page_id == page_id) == 0
+
+
+def test_a_page_section_item_created_and_deleted_in_one_transaction_passes(
+    db: Connection,
+) -> None:
+    editor = add_staff(db)
+    page_id = add_page(db, editor)
+    item_id = add_item(db, editor, kind="page_section")
+    db.execute(
+        sa.insert(page_section).values(
+            item_id=item_id,
+            page_id=page_id,
+            section_key="hero",
+            sort_order=0,
+        )
+    )
+
+    db.execute(sa.delete(content_item).where(content_item.c.id == item_id))
+    db.execute(sa.text("set constraints content_item_page_section_row immediate"))
+
+    assert count_rows(db, content_item, content_item.c.id == item_id) == 0
+    assert count_rows(db, page_section, page_section.c.item_id == item_id) == 0
 
 
 def test_deleting_a_section_item_cascades_its_row(db: Connection) -> None:
@@ -1027,6 +1055,40 @@ def test_a_page_section_row_can_be_deleted_and_recreated_in_one_transaction(
     db.execute(sa.text("set constraints page_section_row_kept immediate"))
 
     assert count_rows(db, page_section, page_section.c.item_id == item_id) == 1
+
+
+@pytest.mark.parametrize("column", ["page_id", "section_key", "sort_order"])
+def test_a_page_section_row_cannot_be_recreated_with_different_values(
+    db: Connection, column: str
+) -> None:
+    editor = add_staff(db)
+    page_id, item_id = add_section(db, editor, "hero", 0)
+    row: dict[str, object] = {
+        "item_id": item_id,
+        "page_id": page_id,
+        "section_key": "hero",
+        "sort_order": 0,
+    }
+    row[column] = {
+        "page_id": add_page(db, editor),
+        "section_key": "contact",
+        "sort_order": 1,
+    }[column]
+
+    with pytest.raises(DBAPIError, match=PAGE_SECTION_CHANGED):
+        with db.begin_nested():
+            db.execute(sa.delete(page_section).where(page_section.c.item_id == item_id))
+            db.execute(sa.insert(page_section).values(**row))
+            db.execute(sa.text("set constraints page_section_row_kept immediate"))
+
+    stored = db.execute(
+        sa.select(
+            page_section.c.page_id,
+            page_section.c.section_key,
+            page_section.c.sort_order,
+        ).where(page_section.c.item_id == item_id)
+    ).one()
+    assert stored == (page_id, "hero", 0)
 
 
 def test_an_item_cannot_become_a_page_section_without_a_row(db: Connection) -> None:
@@ -1878,7 +1940,9 @@ def test_the_installed_assert_page_section_row_pins_its_message(db: Connection) 
     normalised = normalise(definition)
 
     for fragment in [
-        "if new.kind = 'page_section' and not exists",
+        "if exists (",
+        "select 1 from content_item where id = new.id and kind = 'page_section'",
+        "and not exists (",
         "select 1 from page_section where item_id = new.id",
         "raise exception 'page section item % needs a page_section row', new.id",
         "if tg_op = 'update'",
@@ -1910,14 +1974,18 @@ def test_the_installed_assert_page_section_row_pins_its_message(db: Connection) 
         (
             "assert_page_section_item_kept()",
             [
-                "if exists (",
+                "if not exists (",
                 "select 1 from content_item where id = old.item_id "
                 "and kind = 'page_section'",
-                "and not exists (",
-                "select 1 from page_section where item_id = old.item_id",
+                "select page_id, section_key, sort_order",
+                "if not found then",
                 "raise exception 'page section item % lost its page_section row', "
                 "old.item_id",
-                "return null",
+                "if v_page_id is not distinct from old.page_id",
+                "and v_section_key is not distinct from old.section_key",
+                "and v_sort_order is not distinct from old.sort_order then",
+                "raise exception 'page section item % changed its page_section row', "
+                "old.item_id",
             ],
         ),
         (

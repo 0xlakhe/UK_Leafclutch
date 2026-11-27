@@ -246,6 +246,35 @@ Mutation proofs, on a scratch copy `leafclutch_scratch_test` created from
 The part-2 open question about `section_version.section_key` is closed by High 2:
 `section_version_key_guard` now ties the key to the owning `page_section` row.
 
+### 2026-11-27 — recheck: the row must stay identical
+
+Fixed the first half of the recheck findings in the same revision, still in place and
+unpushed (`62fec05` is the last commit). `assert_page_section_item_kept()` now requires the
+replacement row to match the deleted row's `page_id`, `section_key` and `sort_order` with
+`is not distinct from`; a difference raises `page section item % changed its page_section
+row`, while a missing row keeps `page section item % lost its page_section row`. A
+delete-and-reinsert is therefore allowed only when the row is identical. In
+`assert_page_section_row()`, the needs-row check now reads the item's current state
+(`exists (select 1 from content_item where id = new.id and kind = 'page_section')`) rather
+than the queued event's `new.kind`, so an item created and deleted in one transaction
+passes its deferred insert check; the versions branch is unchanged.
+
+The tests add three changed-reinsert cases (`page_id`, `section_key`, `sort_order`), keep
+the identical reinsert, add a create-and-delete transaction, and change the
+sections-then-page test to delete both section items and the page before forcing
+`content_item_page_section_row, page_section_row_kept immediate`; the page-delete refusal
+test stays. The two function-body catalogue pins were updated.
+
+Mutation proofs on `leafclutch_scratch_test` (created from `leafclutch_test`, dropped
+afterwards):
+
+1. Presence-only `assert_page_section_item_kept()`: the changed-reinsert test failed with
+   `Failed: DID NOT RAISE DBAPIError` (`test_page_sections.py:1078`); the restored function
+   passed.
+2. The old `new.kind` check in `assert_page_section_row()`: the create-and-delete test
+   failed with `page section item <id> needs a page_section row`; the restored function
+   passed, and the whole file passed on the scratch database (`109 passed`).
+
 ## Decisions made
 
 - The deferred trigger's `tgdeferrable`/`tginitdeferred` flags and its function body are
@@ -318,6 +347,12 @@ The part-2 open question about `section_version.section_key` is closed by High 2
 - Review round: `Backend/docs/DATABASE.md` documents the new trigger events, the three
   functions, their messages and the corrected invariant wording.
 - Review round: `Backend/docs/work/0007-landing-page-sections.md` — this update.
+- Recheck: `Backend/migrations/versions/0005_page_sections.py` changes the two function
+  bodies (`assert_page_section_row` reads the current item; `assert_page_section_item_kept`
+  compares the replacement row); `Backend/docs/DATABASE.md` §Section items follows;
+  `Backend/tests/test_page_sections.py` gains the changed-reinsert and create-and-delete
+  cases, changes the sections-then-page test and updates the two body pins.
+- Recheck: `Backend/docs/work/0007-landing-page-sections.md` — this update.
 
 ## Migrations
 
@@ -348,6 +383,10 @@ The part-2 open question about `section_version.section_key` is closed by High 2
   follows the part-2 order. The round trip was re-run: `alembic downgrade base` downgraded
   all five revisions, `alembic upgrade head` upgraded all five, and `alembic current`
   reported `0005_page_sections (head)`.
+- The recheck changes two function bodies only: `assert_page_section_row` checks the item's
+  current state, and `assert_page_section_item_kept` compares the replacement row's
+  `page_id`, `section_key` and `sort_order`. The triggers, tables and downgrade are
+  unchanged. The round trip was re-run with the same result.
 
 ## Tests
 
@@ -467,6 +506,40 @@ after removing the versions condition from `assert_page_section_row()`; the rest
 function passed and the whole file passed on the scratch database (`105 passed`). The
 scratch database was dropped.
 
+The recheck, run from `Backend/` on 2026-11-27 against PostgreSQL 18 in Docker (port 5434):
+
+| Command | Result |
+| --- | --- |
+| `uv run ruff check .` | `All checks passed!` |
+| `uv run mypy app` | `Success: no issues found in 6 source files` |
+| `uv run pytest -q` | `319 passed, 4 warnings in 1.43s` |
+| `uv run pytest -q --import-mode=importlib` | `319 passed, 4 warnings in 1.40s` |
+| `uv run alembic check` | `No new upgrade operations detected.` |
+| `uv run alembic downgrade base` | all five revisions downgraded |
+| `uv run alembic upgrade head` | all five revisions upgraded |
+| `uv run alembic current` | `0005_page_sections (head)` |
+
+Recheck mutation proofs on `leafclutch_scratch_test`:
+
+```
+E   Failed: DID NOT RAISE DBAPIError
+tests/test_page_sections.py:1078: Failed: DID NOT RAISE DBAPIError
+1 failed, 1 warning in 0.18s
+```
+
+after replacing `assert_page_section_item_kept()` with the presence-only body; the restored
+function gave `3 passed`.
+
+```
+E   psycopg.errors.RaiseException: page section item <id> needs a page_section row
+FAILED tests/test_page_sections.py::test_a_page_section_item_created_and_deleted_in_one_transaction_passes
+1 failed, 1 warning in 0.24s
+```
+
+after restoring the old `new.kind` check in `assert_page_section_row()`; the restored
+function passed and the whole file passed on the scratch database (`109 passed`). The
+scratch database was dropped.
+
 ## Review
 
 ## Docs updated
@@ -494,8 +567,8 @@ scratch database was dropped.
   fragment checks rather than exact `pg_get_functiondef` comparisons, as in tasks
   0003/0004. The reason is recorded with the review: the behavioural tests and the four
   mutation proofs cover each branch.
-- No other code, test or migration work remains for this task; the independent re-review
-  and the orchestrator's decision are the next gate.
+- The first half of the recheck findings is fixed in this commit; nothing else is open for
+  that half. The independent re-review and the orchestrator's decision are the next gate.
 
 ## Next
 
