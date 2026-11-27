@@ -202,6 +202,9 @@ VERSION_STATUS = sa.Enum(
     "draft", "in_review", "published", name="version_status", create_type=False
 )
 
+# Created by revision 0001_extensions_enums, like the content kind.
+FAQ_STATUS = sa.Enum("published", "draft", name="faq_status", create_type=False)
+
 content_item = sa.Table(
     "content_item",
     Base.metadata,
@@ -563,4 +566,162 @@ section_version = sa.Table(
         "and (cta_href is null or char_length(cta_href) <= 200)",
         name="section_version_href_length",
     ),
+)
+
+section_paragraph = sa.Table(
+    "section_paragraph",
+    Base.metadata,
+    sa.Column(
+        "version_id",
+        sa.Uuid(),
+        sa.ForeignKey("content_version.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column("sort_order", sa.Integer(), nullable=False),
+    sa.Column("text", sa.Text(), nullable=False),
+    sa.PrimaryKeyConstraint("version_id", "sort_order"),
+    sa.CheckConstraint("sort_order between 0 and 3", name="section_paragraph_sort"),
+    sa.CheckConstraint(
+        "char_length(text) between 1 and 600", name="section_paragraph_length"
+    ),
+)
+
+process_stage = sa.Table(
+    "process_stage",
+    Base.metadata,
+    sa.Column(
+        "version_id",
+        sa.Uuid(),
+        sa.ForeignKey("content_version.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column("sort_order", sa.Integer(), nullable=False),
+    sa.Column("title", sa.Text()),
+    sa.Column("body", sa.Text()),
+    sa.PrimaryKeyConstraint("version_id", "sort_order"),
+    sa.CheckConstraint("sort_order between 0 and 3", name="process_stage_sort"),
+    sa.CheckConstraint(
+        "title is null or char_length(title) <= 40", name="process_stage_title_length"
+    ),
+    sa.CheckConstraint(
+        "body is null or char_length(body) <= 160", name="process_stage_body_length"
+    ),
+)
+
+process_assurance = sa.Table(
+    "process_assurance",
+    Base.metadata,
+    sa.Column(
+        "version_id",
+        sa.Uuid(),
+        sa.ForeignKey("content_version.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column("sort_order", sa.Integer(), nullable=False),
+    sa.Column("title", sa.Text()),
+    sa.Column("body", sa.Text()),
+    sa.PrimaryKeyConstraint("version_id", "sort_order"),
+    sa.CheckConstraint("sort_order between 0 and 2", name="process_assurance_sort"),
+    sa.CheckConstraint(
+        "title is null or char_length(title) <= 40",
+        name="process_assurance_title_length",
+    ),
+    sa.CheckConstraint(
+        "body is null or char_length(body) <= 160",
+        name="process_assurance_body_length",
+    ),
+)
+
+faq_item = sa.Table(
+    "faq_item",
+    Base.metadata,
+    sa.Column(
+        "version_id",
+        sa.Uuid(),
+        sa.ForeignKey("content_version.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column("sort_order", sa.Integer(), nullable=False),
+    sa.Column("question", sa.Text()),
+    sa.Column("answer", sa.Text()),
+    sa.Column(
+        "status",
+        FAQ_STATUS,
+        nullable=False,
+        server_default=sa.text("'published'::faq_status"),
+    ),
+    sa.PrimaryKeyConstraint("version_id", "sort_order"),
+    sa.CheckConstraint(
+        "question is null or char_length(question) <= 120",
+        name="faq_question_length",
+    ),
+    sa.CheckConstraint(
+        "answer is null or char_length(answer) <= 600", name="faq_answer_length"
+    ),
+)
+
+contact_next_step = sa.Table(
+    "contact_next_step",
+    Base.metadata,
+    sa.Column(
+        "version_id",
+        sa.Uuid(),
+        sa.ForeignKey("content_version.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column("sort_order", sa.Integer(), nullable=False),
+    sa.Column("title", sa.Text()),
+    sa.Column("body", sa.Text()),
+    sa.PrimaryKeyConstraint("version_id", "sort_order"),
+    sa.CheckConstraint("sort_order between 0 and 3", name="contact_next_step_sort"),
+    sa.CheckConstraint(
+        "title is null or char_length(title) <= 40",
+        name="contact_next_step_title_length",
+    ),
+    sa.CheckConstraint(
+        "body is null or char_length(body) <= 160",
+        name="contact_next_step_body_length",
+    ),
+)
+
+# A version references records by item id, so a project publishes without a page
+# republish. `sort_order` is null exactly for projects: theirs is project.live_sort_order.
+section_version_item = sa.Table(
+    "section_version_item",
+    Base.metadata,
+    sa.Column(
+        "version_id",
+        sa.Uuid(),
+        sa.ForeignKey("content_version.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column("item_id", sa.Uuid(), nullable=False),
+    sa.Column("item_kind", CONTENT_KIND, nullable=False),
+    sa.Column("sort_order", sa.Integer()),
+    sa.PrimaryKeyConstraint("version_id", "item_id", name="section_version_item_pk"),
+    sa.ForeignKeyConstraint(
+        ["item_id", "item_kind"],
+        ["content_item.id", "content_item.kind"],
+        name="section_version_item_fk",
+        ondelete="RESTRICT",
+    ),
+    sa.CheckConstraint(
+        "item_kind in ('service_group', 'project', 'proof_figure', 'testimonial')",
+        name="section_version_item_kind",
+    ),
+    sa.CheckConstraint(
+        "sort_order is null or sort_order >= 0", name="section_version_item_sort"
+    ),
+    sa.CheckConstraint(
+        "(item_kind = 'project') = (sort_order is null)",
+        name="section_version_item_order",
+    ),
+    sa.Index(
+        "section_version_item_order_key",
+        "version_id",
+        "sort_order",
+        unique=True,
+        postgresql_where=sa.text("sort_order is not null"),
+    ),
+    sa.Index("section_version_item_lookup_idx", "item_id"),
 )

@@ -126,7 +126,7 @@ the three functions, then the eight tables in reverse dependency order.
 
 Implemented the first of the two commits planned for this task. `Backend/app/models.py` now
 defines `PAGE_SECTION_KEY`, `page_section` and `section_version`.
-`Backend/migrations/versions/0005_page_sections.py` creates them with the four
+`Backend/migrations/versions/0005_page_sections.py` creates them with the three
 `page_section` checks, both composite foreign keys, both uniques,
 `page_section_page_idx`, all twelve `section_version` checks, `assert_page_section_row()`
 and its deferred constraint trigger, and `section_version_immutable` reusing
@@ -144,6 +144,57 @@ concurrency tests create, and the new foreign keys make `page_section` and
 `section_version` part of that truncate. Both changes are consequences of this slice, not
 weakened assertions.
 
+### 2026-11-27 — part 2: the section children and references
+
+Extended revision `0005_page_sections` in place. It is unpushed and nothing outside this
+checkout has applied it: `2999fab` holds the part-1 version, and no other database has run
+it. `Backend/app/models.py` now also defines `FAQ_STATUS`, `section_paragraph`,
+`process_stage`, `process_assurance`, `faq_item`, `contact_next_step` and
+`section_version_item`. `Backend/migrations/versions/0005_page_sections.py` creates the six
+tables in dependency order, the partial unique `section_version_item_order_key` and
+`section_version_item_lookup_idx`, `assert_section_child()` with its five triggers,
+`assert_section_version_item()` with `section_version_item_assert`, and the six remaining
+`prevent_published_content_mutation()` attachments. Its downgrade drops every new trigger
+and function before the six tables, in reverse dependency order, and drops `section_version`
+and `page_section` last as before.
+
+`Backend/tests/test_page_sections.py` grows by 39 cases, 295 in the suite. The new tests
+cover the M5 exit check (ten `page_section` rows in PRD §5 order read back in that order),
+each `assert_section_child` wrong key with the owning key accepted, all four invalid and all
+four valid `section_version_item` pairings, the published-version insert refusal, a
+reference moving between versions or between items, a reference on a non-`page_section`
+version and on a `page_section` version without its `page_section` row, the
+project/non-project order rule, the partial unique index and its repeated nulls, the
+composite `on delete restrict`, draft-editable/published-frozen on all six tables, the
+draft-version cascade, and the catalogue pinning of every constraint, both indexes, all
+fourteen trigger event-bit tuples and both new function bodies including every message.
+
+`Backend/tests/test_staff_schema.py`'s cleanup `TRUNCATE` list gains the six tables.
+`TRUNCATE` refuses while any table references `content_version` or `content_item`,
+regardless of rows. That is a consequence of the new foreign keys, and it is load-bearing:
+applying the revision to the test database before the list changed left the concurrency
+tests' committed rows behind, and five staff tests failed until the list was extended and
+the stale rows were removed.
+
+Mutation proofs, on a scratch copy `leafclutch_scratch_test` created from
+`leafclutch_test` and dropped afterwards:
+
+1. Dropping `section_paragraph_section` made the wrong-key test fail with `Failed: DID NOT
+   RAISE DBAPIError`; recreating the trigger made it pass (`1 passed`).
+2. Dropping `section_version_item_assert` made the wrong-pairing test fail with `Failed:
+   DID NOT RAISE DBAPIError`; recreating it made it pass (`1 passed`).
+3. The brief's literal "drop `content_item_page_section_row` and weaken
+   `assert_page_section_row()`" combination fails first on the missing constraint name
+   (`constraint "content_item_page_section_row" does not exist` from `set constraints`), so
+   the proof that the rule matters, not the name, keeps the trigger and replaces the
+   function body with `return new;`: the deferred test then failed with `Failed: DID NOT
+   RAISE DBAPIError`. The migration's function and trigger were restored and the whole file
+   passed on the scratch database (`85 passed`).
+
+The open question from part 1 stands: `section_version.section_key` is not tied to the
+owning `page_section.section_key`; `DATABASE.md` defines no such constraint and none was
+added.
+
 ## Decisions made
 
 - The deferred trigger's `tgdeferrable`/`tginitdeferred` flags and its function body are
@@ -156,6 +207,17 @@ weakened assertions.
 - `section_version.section_key` is not tied to `page_section.section_key`: `DATABASE.md`
   defines no such constraint and the brief says not to add one. Recorded under Open
   questions.
+- A published `section_version_item` refuses an edit or delete with `published section
+  version is immutable`, from `assert_section_version_item`, not the generic `published
+  version content is immutable`: PostgreSQL fires `before` row triggers in name order, and
+  `section_version_item_assert` sorts before `section_version_item_immutable`. The tests
+  pin the message that actually fires.
+- Part-2 mutation proof 3 keeps `content_item_page_section_row` and weakens only
+  `assert_page_section_row()`, because dropping the trigger fails on the missing constraint
+  name before the function is reached; the kept-trigger run is the one that proves the
+  rule.
+- The brief's part-1 text says "the four page_section checks"; the table has three, and the
+  work log now says three.
 
 ## Files changed
 
@@ -167,6 +229,16 @@ weakened assertions.
 - `Backend/tests/test_staff_schema.py` — cleanup truncate list gains the two new tables.
 - `Backend/README.md` — the two Layout rows name the page-section tables.
 - `Backend/docs/work/0007-landing-page-sections.md` — this update.
+- Part 2: `Backend/app/models.py` also gains `FAQ_STATUS` and the six child/reference
+  tables, `section_paragraph`, `process_stage`, `process_assurance`, `faq_item`,
+  `contact_next_step` and `section_version_item`.
+- Part 2: `Backend/migrations/versions/0005_page_sections.py` gains the six tables, the two
+  indexes, the two functions, the twelve new trigger attachments and the extended
+  downgrade.
+- Part 2: `Backend/tests/test_page_sections.py` gains 39 cases, 85 in the file.
+- Part 2: `Backend/tests/test_staff_schema.py` gains the six child tables in the cleanup
+  truncate list.
+- Part 2: `Backend/docs/work/0007-landing-page-sections.md` — this update.
 
 ## Migrations
 
@@ -178,6 +250,16 @@ weakened assertions.
 - Downgrade drops both triggers, then the function, then `section_version`, then
   `page_section`. Verified with `alembic downgrade base` → `alembic upgrade head` →
   `alembic current`.
+- Part 2 extends the same revision with `section_paragraph`, `process_stage`,
+  `process_assurance`, `faq_item`, `contact_next_step` and `section_version_item`, the
+  partial unique `section_version_item_order_key`
+  (`where sort_order is not null`), `section_version_item_lookup_idx`,
+  `assert_section_child()`, `assert_section_version_item()`, the five `*_section`
+  triggers, `section_version_item_assert` and the six `*_immutable` triggers.
+- The extended downgrade drops the twelve new triggers, then the two functions, then the
+  six new tables, then the part-1 objects. The round trip was re-run after the extension:
+  `alembic downgrade base` downgraded all five revisions, `alembic upgrade head` upgraded
+  all five, and `alembic current` reported `0005_page_sections (head)`.
 
 ## Tests
 
@@ -209,6 +291,46 @@ Restoring the trigger with the migration's `create constraint trigger` made the 
 pass (`1 passed`). The scratch database was dropped; the test database has no committed
 rows.
 
+Part 2, run from `Backend/` on 2026-11-27 against PostgreSQL 18 in Docker (port 5434):
+
+| Command | Result |
+| --- | --- |
+| `uv run ruff check .` | `All checks passed!` |
+| `uv run mypy app` | `Success: no issues found in 6 source files` |
+| `uv run pytest -q` | `295 passed, 4 warnings in 1.47s` |
+| `uv run pytest -q --import-mode=importlib` | `295 passed, 4 warnings in 1.29s` |
+| `uv run alembic check` | `No new upgrade operations detected.` |
+| `uv run alembic downgrade base` | all five revisions downgraded |
+| `uv run alembic upgrade head` | all five revisions upgraded |
+| `uv run alembic current` | `0005_page_sections (head)` |
+
+Part-2 mutation proofs on `leafclutch_scratch_test`:
+
+```
+tests/test_page_sections.py:1151: Failed: DID NOT RAISE DBAPIError
+1 failed, 1 warning in 0.17s
+```
+
+after dropping `section_paragraph_section`; the restored trigger gave `1 passed`.
+
+```
+tests/test_page_sections.py:1225: Failed: DID NOT RAISE DBAPIError
+1 failed, 1 warning in 0.18s
+```
+
+after dropping `section_version_item_assert`; the restored trigger gave `1 passed`.
+
+```
+tests/test_page_sections.py:788: Failed: DID NOT RAISE DBAPIError
+1 failed, 1 warning in 0.18s
+```
+
+with `content_item_page_section_row` kept and `assert_page_section_row()` replaced by
+`return new;`. Dropping the trigger as well fails earlier with `constraint
+"content_item_page_section_row" does not exist` from `set constraints`, which proves the
+attachment but not the rule. The restored function and trigger gave `1 passed`, and the
+whole file passed on the scratch database (`85 passed`). The scratch database was dropped.
+
 ## Review
 
 ## Docs updated
@@ -218,13 +340,15 @@ rows.
 - No change to `DATABASE.md`, `CONTRACT.md`, `ADMIN.md` or OpenAPI: the schema was already
   documented in `DATABASE.md` §Section items, §Section copy and §Publication and
   immutability, and this slice exposes no endpoint.
+- Part 2 needs no further documentation change: `DATABASE.md` §Lists inside a section,
+  §Section references and §Publication and immutability already specify the six tables and
+  their guards, and the slice still exposes no endpoint, so `CONTRACT.md`, `ADMIN.md` and
+  OpenAPI do not move.
 
 ## Remaining
 
-- Part 2 of the task: `section_paragraph`, `process_stage`, `process_assurance`,
-  `faq_item`, `contact_next_step`, `section_version_item`, `assert_section_child` with
-  its five triggers, `assert_section_version_item` with `section_version_item_assert`, the
-  remaining immutability attachments, and the ten-section order test.
+- No code, test or migration work remains for this task. Part 2 landed in this commit; the
+  independent review and the orchestrator's accept/reject decision are the next gate.
 
 ## Next
 
@@ -234,6 +358,10 @@ rows.
   of the item that owns the version. `DATABASE.md` §Section copy defines no such
   constraint and the brief says not to add one; the mismatch is left to FastAPI and the
   publish gate. Confirm that is intended.
+- Part 2 adds no constraint tying them: `assert_section_child` reads the version's
+  `section_key`, while `assert_section_version_item` reads the owning `page_section` row,
+  so a hand-written `section_version` can still disagree with the `page_section` row it
+  belongs to. The same FastAPI/publish-gate assumption applies.
 
 ## Not verified
 
@@ -243,4 +371,7 @@ rows.
   committed failure in this suite.
 - `alembic downgrade base` was run only on the local development database; there is no
   staging or production database in this environment.
+- The part-2 guards were exercised through SQL only: no application code reads or writes
+  the six tables yet, so there is no service-level path to verify, and the part-2 runs were
+  against the local PostgreSQL 18 container only.
 

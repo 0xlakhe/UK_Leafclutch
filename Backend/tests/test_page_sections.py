@@ -1,8 +1,8 @@
-"""The page section tables' constraints, guards and cascade rules, against real PostgreSQL.
+"""The page section, list and reference tables' constraints, guards and cascade rules.
 
 Every test runs inside the ``db`` transaction and is rolled back by the fixture. The
 fixtures insert the auth user and staff rows the foreign keys reference, then the items,
-versions and section rows the case needs. No row is committed.
+versions, section and child rows the case needs. No row is committed.
 
 The deferred constraint trigger is exercised by switching it to immediate inside a
 savepoint: the savepoint's rollback keeps the outer test transaction clean, and the raised
@@ -24,21 +24,118 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from app.models import (
     auth_users,
+    contact_next_step,
     content_item,
     content_version,
+    faq_item,
     media,
     page_section,
+    process_assurance,
+    process_stage,
+    section_paragraph,
     section_version,
+    section_version_item,
     staff,
 )
 
 PAGE_SECTION_NEEDS_ROW = "page section item .* needs a page_section row"
 IMMUTABLE_CONTENT = "published version content is immutable"
+ROW_BELONGS = "row belongs to section .*"
+REFERENCE_MOVE = "a section reference cannot move between versions or items"
+REFERENCE_NOT_SECTION = "references belong to a page section version"
+PUBLISHED_SECTION = "published section version is immutable"
+SECTION_ITEM_MISSING = "section item has no page_section row"
+
+# The ten keys in the order PRD §5 lists them. This is the landing page's reading order.
+PRD_SECTIONS = [
+    "hero",
+    "proof",
+    "services",
+    "not-sure",
+    "work",
+    "process",
+    "about",
+    "testimonials",
+    "faqs",
+    "contact",
+]
+
+# The five list tables, the section key that owns each, a valid row and the column an edit
+# changes. `section_version_item` is a reference table and is exercised separately.
+SECTION_CHILD_TABLES: dict[str, sa.Table] = {
+    "contact_next_step": contact_next_step,
+    "faq_item": faq_item,
+    "process_assurance": process_assurance,
+    "process_stage": process_stage,
+    "section_paragraph": section_paragraph,
+}
+
+CHILD_SECTION_KEY: dict[str, str] = {
+    "contact_next_step": "contact",
+    "faq_item": "faqs",
+    "process_assurance": "process",
+    "process_stage": "process",
+    "section_paragraph": "about",
+}
+
+CHILD_ROW: dict[str, dict[str, object]] = {
+    "contact_next_step": {"title": "Start a conversation", "body": "Send us the brief"},
+    "faq_item": {"question": "How long does it take?", "answer": "It depends."},
+    "process_assurance": {"title": "Fixed price", "body": "Agreed before work starts"},
+    "process_stage": {"title": "Discovery", "body": "We read the brief"},
+    "section_paragraph": {"text": "We are a small studio."},
+}
+
+CHILD_EDIT: dict[str, dict[str, object]] = {
+    "contact_next_step": {"title": "Edited next step"},
+    "faq_item": {"question": "Edited question?"},
+    "process_assurance": {"title": "Edited assurance"},
+    "process_stage": {"title": "Edited stage"},
+    "section_paragraph": {"text": "Edited paragraph"},
+}
+
+# The four record-backed section keys and the item kind each renders.
+REFERENCE_KIND: dict[str, str] = {
+    "proof": "proof_figure",
+    "services": "service_group",
+    "testimonials": "testimonial",
+    "work": "project",
+}
 
 # The primary keys, unique constraints, checks and foreign keys as PostgreSQL renders
 # them. The definitions are normalised by ``normalise_constraint`` before the comparison,
 # so PostgreSQL's whitespace and decorative parentheses do not matter.
 EXPECTED_CONSTRAINTS: dict[str, tuple[str, str]] = {
+    "contact_next_step_body_length": (
+        "c",
+        "CHECK (((body IS NULL) OR (char_length(body) <= 160)))",
+    ),
+    "contact_next_step_pkey": ("p", "PRIMARY KEY (version_id, sort_order)"),
+    "contact_next_step_sort": (
+        "c",
+        "CHECK (((sort_order >= 0) AND (sort_order <= 3)))",
+    ),
+    "contact_next_step_title_length": (
+        "c",
+        "CHECK (((title IS NULL) OR (char_length(title) <= 40)))",
+    ),
+    "contact_next_step_version_id_fkey": (
+        "f",
+        "FOREIGN KEY (version_id) REFERENCES content_version(id) ON DELETE CASCADE",
+    ),
+    "faq_answer_length": (
+        "c",
+        "CHECK (((answer IS NULL) OR (char_length(answer) <= 600)))",
+    ),
+    "faq_item_pkey": ("p", "PRIMARY KEY (version_id, sort_order)"),
+    "faq_item_version_id_fkey": (
+        "f",
+        "FOREIGN KEY (version_id) REFERENCES content_version(id) ON DELETE CASCADE",
+    ),
+    "faq_question_length": (
+        "c",
+        "CHECK (((question IS NULL) OR (char_length(question) <= 120)))",
+    ),
     "page_section_item_fk": (
         "f",
         "FOREIGN KEY (item_id, kind) REFERENCES content_item(id, kind) ON DELETE CASCADE",
@@ -57,6 +154,53 @@ EXPECTED_CONSTRAINTS: dict[str, tuple[str, str]] = {
     ),
     "page_section_pkey": ("p", "PRIMARY KEY (item_id)"),
     "page_section_sort": ("c", "CHECK ((sort_order >= 0))"),
+    "process_assurance_body_length": (
+        "c",
+        "CHECK (((body IS NULL) OR (char_length(body) <= 160)))",
+    ),
+    "process_assurance_pkey": ("p", "PRIMARY KEY (version_id, sort_order)"),
+    "process_assurance_sort": (
+        "c",
+        "CHECK (((sort_order >= 0) AND (sort_order <= 2)))",
+    ),
+    "process_assurance_title_length": (
+        "c",
+        "CHECK (((title IS NULL) OR (char_length(title) <= 40)))",
+    ),
+    "process_assurance_version_id_fkey": (
+        "f",
+        "FOREIGN KEY (version_id) REFERENCES content_version(id) ON DELETE CASCADE",
+    ),
+    "process_stage_body_length": (
+        "c",
+        "CHECK (((body IS NULL) OR (char_length(body) <= 160)))",
+    ),
+    "process_stage_pkey": ("p", "PRIMARY KEY (version_id, sort_order)"),
+    "process_stage_sort": (
+        "c",
+        "CHECK (((sort_order >= 0) AND (sort_order <= 3)))",
+    ),
+    "process_stage_title_length": (
+        "c",
+        "CHECK (((title IS NULL) OR (char_length(title) <= 40)))",
+    ),
+    "process_stage_version_id_fkey": (
+        "f",
+        "FOREIGN KEY (version_id) REFERENCES content_version(id) ON DELETE CASCADE",
+    ),
+    "section_paragraph_length": (
+        "c",
+        "CHECK (((char_length(text) >= 1) AND (char_length(text) <= 600)))",
+    ),
+    "section_paragraph_pkey": ("p", "PRIMARY KEY (version_id, sort_order)"),
+    "section_paragraph_sort": (
+        "c",
+        "CHECK (((sort_order >= 0) AND (sort_order <= 3)))",
+    ),
+    "section_paragraph_version_id_fkey": (
+        "f",
+        "FOREIGN KEY (version_id) REFERENCES content_version(id) ON DELETE CASCADE",
+    ),
     "section_version_body_key": (
         "c",
         "CHECK (((section_key = ANY (ARRAY['hero'::page_section_key, "
@@ -111,6 +255,30 @@ EXPECTED_CONSTRAINTS: dict[str, tuple[str, str]] = {
         "CHECK (((section_key = ANY (ARRAY['services'::page_section_key, "
         "'work'::page_section_key, 'process'::page_section_key])) OR (intro IS NULL)))",
     ),
+    "section_version_item_fk": (
+        "f",
+        "FOREIGN KEY (item_id, item_kind) REFERENCES content_item(id, kind) "
+        "ON DELETE RESTRICT",
+    ),
+    "section_version_item_kind": (
+        "c",
+        "CHECK ((item_kind = ANY (ARRAY['service_group'::content_kind, "
+        "'project'::content_kind, 'proof_figure'::content_kind, "
+        "'testimonial'::content_kind])))",
+    ),
+    "section_version_item_order": (
+        "c",
+        "CHECK (((item_kind = 'project'::content_kind) = (sort_order IS NULL)))",
+    ),
+    "section_version_item_pk": ("p", "PRIMARY KEY (version_id, item_id)"),
+    "section_version_item_sort": (
+        "c",
+        "CHECK (((sort_order IS NULL) OR (sort_order >= 0)))",
+    ),
+    "section_version_item_version_id_fkey": (
+        "f",
+        "FOREIGN KEY (version_id) REFERENCES content_version(id) ON DELETE CASCADE",
+    ),
     "section_version_nav_key": (
         "c",
         "CHECK (((section_key = ANY (ARRAY['services'::page_section_key, "
@@ -130,9 +298,17 @@ EXPECTED_CONSTRAINTS: dict[str, tuple[str, str]] = {
     ),
 }
 
-# Every index on the two tables, including the ones backing a constraint, so an extra
+# Every index on the eight tables, including the ones backing a constraint, so an extra
 # index fails the comparison as well as a changed expression or predicate.
 EXPECTED_INDEXES: dict[str, str] = {
+    "contact_next_step_pkey": (
+        "CREATE UNIQUE INDEX contact_next_step_pkey ON public.contact_next_step USING "
+        "btree (version_id, sort_order)"
+    ),
+    "faq_item_pkey": (
+        "CREATE UNIQUE INDEX faq_item_pkey ON public.faq_item USING btree "
+        "(version_id, sort_order)"
+    ),
     "page_section_key_unique": (
         "CREATE UNIQUE INDEX page_section_key_unique ON public.page_section USING btree "
         "(page_id, section_key)"
@@ -149,6 +325,31 @@ EXPECTED_INDEXES: dict[str, str] = {
         "CREATE UNIQUE INDEX page_section_pkey ON public.page_section USING btree "
         "(item_id)"
     ),
+    "process_assurance_pkey": (
+        "CREATE UNIQUE INDEX process_assurance_pkey ON public.process_assurance USING "
+        "btree (version_id, sort_order)"
+    ),
+    "process_stage_pkey": (
+        "CREATE UNIQUE INDEX process_stage_pkey ON public.process_stage USING btree "
+        "(version_id, sort_order)"
+    ),
+    "section_paragraph_pkey": (
+        "CREATE UNIQUE INDEX section_paragraph_pkey ON public.section_paragraph USING "
+        "btree (version_id, sort_order)"
+    ),
+    "section_version_item_lookup_idx": (
+        "CREATE INDEX section_version_item_lookup_idx ON public.section_version_item "
+        "USING btree (item_id)"
+    ),
+    "section_version_item_order_key": (
+        "CREATE UNIQUE INDEX section_version_item_order_key ON "
+        "public.section_version_item USING btree (version_id, sort_order) "
+        "WHERE (sort_order IS NOT NULL)"
+    ),
+    "section_version_item_pk": (
+        "CREATE UNIQUE INDEX section_version_item_pk ON public.section_version_item "
+        "USING btree (version_id, item_id)"
+    ),
     "section_version_pkey": (
         "CREATE UNIQUE INDEX section_version_pkey ON public.section_version USING btree "
         "(version_id)"
@@ -158,6 +359,26 @@ EXPECTED_INDEXES: dict[str, str] = {
 # ``tgtype`` bits: 1 row, 2 before, 4 insert, 8 delete, 16 update. The tuple adds the
 # constraint-trigger flags, which the content spine's triggers do not carry.
 EXPECTED_TRIGGERS: dict[str, tuple[str, bool, bool, bool, bool, bool, bool, bool]] = {
+    "contact_next_step_immutable": (
+        "contact_next_step",
+        True,
+        True,
+        True,
+        True,
+        True,
+        False,
+        False,
+    ),
+    "contact_next_step_section": (
+        "contact_next_step",
+        True,
+        True,
+        True,
+        False,
+        True,
+        False,
+        False,
+    ),
     "content_item_page_section_row": (
         "content_item",
         True,
@@ -168,8 +389,108 @@ EXPECTED_TRIGGERS: dict[str, tuple[str, bool, bool, bool, bool, bool, bool, bool
         True,
         True,
     ),
+    "faq_item_immutable": (
+        "faq_item",
+        True,
+        True,
+        True,
+        True,
+        True,
+        False,
+        False,
+    ),
+    "faq_item_section": (
+        "faq_item",
+        True,
+        True,
+        True,
+        False,
+        True,
+        False,
+        False,
+    ),
+    "process_assurance_immutable": (
+        "process_assurance",
+        True,
+        True,
+        True,
+        True,
+        True,
+        False,
+        False,
+    ),
+    "process_assurance_section": (
+        "process_assurance",
+        True,
+        True,
+        True,
+        False,
+        True,
+        False,
+        False,
+    ),
+    "process_stage_immutable": (
+        "process_stage",
+        True,
+        True,
+        True,
+        True,
+        True,
+        False,
+        False,
+    ),
+    "process_stage_section": (
+        "process_stage",
+        True,
+        True,
+        True,
+        False,
+        True,
+        False,
+        False,
+    ),
+    "section_paragraph_immutable": (
+        "section_paragraph",
+        True,
+        True,
+        True,
+        True,
+        True,
+        False,
+        False,
+    ),
+    "section_paragraph_section": (
+        "section_paragraph",
+        True,
+        True,
+        True,
+        False,
+        True,
+        False,
+        False,
+    ),
     "section_version_immutable": (
         "section_version",
+        True,
+        True,
+        True,
+        True,
+        True,
+        False,
+        False,
+    ),
+    "section_version_item_assert": (
+        "section_version_item",
+        True,
+        True,
+        True,
+        True,
+        True,
+        False,
+        False,
+    ),
+    "section_version_item_immutable": (
+        "section_version_item",
         True,
         True,
         True,
@@ -360,6 +681,53 @@ def add_section_version(
     return version_id
 
 
+def add_child_row(
+    db: Connection, version_id: uuid.UUID, table_name: str, **overrides: object
+) -> None:
+    """Insert a valid list row of ``table_name`` on ``version_id``, with overrides."""
+    values: dict[str, object] = {
+        "version_id": version_id,
+        "sort_order": 0,
+        **CHILD_ROW[table_name],
+    }
+    values.update(overrides)
+    db.execute(sa.insert(SECTION_CHILD_TABLES[table_name]).values(**values))
+
+
+def add_child_version(
+    db: Connection, editor: uuid.UUID, table_name: str, **overrides: object
+) -> uuid.UUID:
+    """Insert the owning section's version and one valid list row on it."""
+    version_id = add_section_version(db, editor, CHILD_SECTION_KEY[table_name])
+    add_child_row(db, version_id, table_name, **overrides)
+    return version_id
+
+
+def add_record_item(db: Connection, editor: uuid.UUID, item_kind: str) -> uuid.UUID:
+    """A record item the sections can reference; projects and services need a slug."""
+    overrides: dict[str, object] = {}
+    if item_kind in ("service", "project"):
+        overrides["slug"] = f"{item_kind}-{uuid.uuid4()}"
+    return add_item(db, editor, kind=item_kind, **overrides)
+
+
+def add_reference(
+    db: Connection,
+    version_id: uuid.UUID,
+    item_id: uuid.UUID,
+    item_kind: str,
+    sort_order: int | None,
+) -> None:
+    db.execute(
+        sa.insert(section_version_item).values(
+            version_id=version_id,
+            item_id=item_id,
+            item_kind=item_kind,
+            sort_order=sort_order,
+        )
+    )
+
+
 def media_values(uploaded_by: uuid.UUID, **overrides: object) -> dict[str, object]:
     """A valid staged image row, with ``overrides`` applied."""
     values: dict[str, object] = {
@@ -397,8 +765,14 @@ def count_rows(db: Connection, table: sa.Table, *conditions: object) -> int:
     return db.execute(statement).scalar_one()
 
 
-def test_the_page_section_tables_start_empty(db: Connection) -> None:
-    for table in (page_section, section_version):
+def test_the_section_tables_start_empty(db: Connection) -> None:
+    tables = [
+        *SECTION_CHILD_TABLES.values(),
+        section_version_item,
+        section_version,
+        page_section,
+    ]
+    for table in tables:
         rows = db.execute(sa.select(sa.func.count()).select_from(table)).scalar_one()
         assert rows == 0, (
             f"stale committed rows in {table.name} from an earlier run; delete them before "
@@ -735,6 +1109,395 @@ def test_deleting_a_draft_content_version_cascades_its_section_version(
     assert count_rows(db, section_version, section_version.c.version_id == version_id) == 0
 
 
+def test_the_ten_prd_sections_read_back_in_their_order(db: Connection) -> None:
+    editor = add_staff(db)
+    page_id = add_page(db, editor)
+    for sort_order, section_key in enumerate(PRD_SECTIONS):
+        add_section(db, editor, section_key, sort_order, page_id)
+
+    rows = db.execute(
+        sa.select(page_section.c.section_key, page_section.c.sort_order)
+        .where(page_section.c.page_id == page_id)
+        .order_by(page_section.c.sort_order)
+    ).all()
+
+    assert [row.section_key for row in rows] == PRD_SECTIONS
+    assert [row.sort_order for row in rows] == list(range(10))
+
+
+@pytest.mark.parametrize(
+    ("table_name", "wrong_key"),
+    [
+        ("section_paragraph", "contact"),
+        ("process_stage", "about"),
+        ("process_assurance", "services"),
+        ("faq_item", "process"),
+        ("contact_next_step", "faqs"),
+    ],
+    ids=[
+        "paragraph-on-contact",
+        "stage-on-about",
+        "assurance-on-services",
+        "faq-on-process",
+        "next-step-on-faqs",
+    ],
+)
+def test_a_child_row_is_refused_on_the_wrong_section(
+    db: Connection, table_name: str, wrong_key: str
+) -> None:
+    editor = add_staff(db)
+    version_id = add_section_version(db, editor, wrong_key)
+
+    with pytest.raises(DBAPIError, match=ROW_BELONGS):
+        with db.begin_nested():
+            add_child_row(db, version_id, table_name)
+
+    assert count_rows(db, SECTION_CHILD_TABLES[table_name]) == 0
+
+
+@pytest.mark.parametrize("table_name", list(CHILD_SECTION_KEY), ids=list(CHILD_SECTION_KEY))
+def test_a_child_row_is_accepted_by_its_owning_section(
+    db: Connection, table_name: str
+) -> None:
+    editor = add_staff(db)
+    version_id = add_child_version(db, editor, table_name)
+
+    table = SECTION_CHILD_TABLES[table_name]
+    assert count_rows(db, table, table.c.version_id == version_id) == 1
+
+
+def test_an_faq_item_defaults_to_published(db: Connection) -> None:
+    editor = add_staff(db)
+    version_id = add_child_version(db, editor, "faq_item")
+
+    status = db.execute(
+        sa.select(faq_item.c.status).where(faq_item.c.version_id == version_id)
+    ).scalar_one()
+
+    assert status == "published"
+
+
+@pytest.mark.parametrize("section_key", list(REFERENCE_KIND), ids=list(REFERENCE_KIND))
+def test_each_record_section_accepts_its_item_kind(
+    db: Connection, section_key: str
+) -> None:
+    editor = add_staff(db)
+    item_kind = REFERENCE_KIND[section_key]
+    version_id = add_section_version(db, editor, section_key)
+    item_id = add_record_item(db, editor, item_kind)
+
+    add_reference(
+        db,
+        version_id,
+        item_id,
+        item_kind,
+        None if item_kind == "project" else 0,
+    )
+
+    assert (
+        count_rows(
+            db,
+            section_version_item,
+            section_version_item.c.version_id == version_id,
+        )
+        == 1
+    )
+
+
+@pytest.mark.parametrize(
+    ("section_key", "item_kind"),
+    [
+        ("services", "project"),
+        ("work", "service_group"),
+        ("proof", "testimonial"),
+        ("testimonials", "proof_figure"),
+    ],
+    ids=["services-project", "work-service-group", "proof-testimonial", "testimonials-figure"],
+)
+def test_a_section_refuses_another_item_kind(
+    db: Connection, section_key: str, item_kind: str
+) -> None:
+    editor = add_staff(db)
+    version_id = add_section_version(db, editor, section_key)
+    item_id = add_record_item(db, editor, item_kind)
+    sort_order = None if item_kind == "project" else 0
+
+    with pytest.raises(
+        DBAPIError, match=f"section {section_key} cannot reference a {item_kind}"
+    ):
+        with db.begin_nested():
+            add_reference(db, version_id, item_id, item_kind, sort_order)
+
+    assert count_rows(db, section_version_item) == 0
+
+
+def test_a_reference_cannot_be_added_to_a_published_version(db: Connection) -> None:
+    editor = add_staff(db)
+    version_id = add_section_version(db, editor, "services")
+    add_reference(
+        db, version_id, add_record_item(db, editor, "service_group"), "service_group", 0
+    )
+    publish_version(db, version_id, editor)
+
+    with pytest.raises(DBAPIError, match=PUBLISHED_SECTION):
+        with db.begin_nested():
+            add_reference(
+                db,
+                version_id,
+                add_record_item(db, editor, "service_group"),
+                "service_group",
+                1,
+            )
+
+    assert (
+        count_rows(
+            db,
+            section_version_item,
+            section_version_item.c.version_id == version_id,
+        )
+        == 1
+    )
+
+
+def test_a_reference_cannot_move_between_versions(db: Connection) -> None:
+    editor = add_staff(db)
+    first_version = add_section_version(db, editor, "services")
+    second_version = add_section_version(db, editor, "services")
+    item_id = add_record_item(db, editor, "service_group")
+    add_reference(db, first_version, item_id, "service_group", 0)
+
+    with pytest.raises(DBAPIError, match=REFERENCE_MOVE):
+        with db.begin_nested():
+            db.execute(
+                sa.update(section_version_item)
+                .where(section_version_item.c.version_id == first_version)
+                .values(version_id=second_version)
+            )
+
+
+def test_a_reference_cannot_move_between_items(db: Connection) -> None:
+    editor = add_staff(db)
+    version_id = add_section_version(db, editor, "services")
+    item_id = add_record_item(db, editor, "service_group")
+    other_id = add_record_item(db, editor, "service_group")
+    add_reference(db, version_id, item_id, "service_group", 0)
+
+    with pytest.raises(DBAPIError, match=REFERENCE_MOVE):
+        with db.begin_nested():
+            db.execute(
+                sa.update(section_version_item)
+                .where(section_version_item.c.item_id == item_id)
+                .values(item_id=other_id)
+            )
+
+
+def test_a_reference_must_belong_to_a_page_section_version(db: Connection) -> None:
+    editor = add_staff(db)
+    project_id = add_record_item(db, editor, "project")
+    version_id = add_version(db, project_id, editor)
+    group_id = add_record_item(db, editor, "service_group")
+
+    with pytest.raises(DBAPIError, match=REFERENCE_NOT_SECTION):
+        with db.begin_nested():
+            add_reference(db, version_id, group_id, "service_group", 0)
+
+
+def test_a_section_item_without_its_row_cannot_take_references(db: Connection) -> None:
+    editor = add_staff(db)
+    item_id = add_item(db, editor, kind="page_section")
+    version_id = add_version(db, item_id, editor)
+    db.execute(
+        sa.insert(section_version).values(version_id=version_id, section_key="services")
+    )
+    group_id = add_record_item(db, editor, "service_group")
+
+    with pytest.raises(DBAPIError, match=SECTION_ITEM_MISSING):
+        with db.begin_nested():
+            add_reference(db, version_id, group_id, "service_group", 0)
+
+
+def test_a_project_reference_carries_no_order(db: Connection) -> None:
+    editor = add_staff(db)
+    version_id = add_section_version(db, editor, "work")
+    project_id = add_record_item(db, editor, "project")
+
+    with pytest.raises(IntegrityError, match="section_version_item_order"):
+        with db.begin_nested():
+            add_reference(db, version_id, project_id, "project", 0)
+
+
+def test_a_non_project_reference_carries_an_order(db: Connection) -> None:
+    editor = add_staff(db)
+    version_id = add_section_version(db, editor, "services")
+    group_id = add_record_item(db, editor, "service_group")
+
+    with pytest.raises(IntegrityError, match="section_version_item_order"):
+        with db.begin_nested():
+            add_reference(db, version_id, group_id, "service_group", None)
+
+
+def test_a_version_cannot_place_two_references_alike(db: Connection) -> None:
+    editor = add_staff(db)
+    version_id = add_section_version(db, editor, "proof")
+    add_reference(
+        db,
+        version_id,
+        add_record_item(db, editor, "proof_figure"),
+        "proof_figure",
+        0,
+    )
+
+    with pytest.raises(IntegrityError, match="section_version_item_order_key"):
+        with db.begin_nested():
+            add_reference(
+                db,
+                version_id,
+                add_record_item(db, editor, "proof_figure"),
+                "proof_figure",
+                0,
+            )
+
+
+def test_unordered_references_can_share_a_version(db: Connection) -> None:
+    editor = add_staff(db)
+    version_id = add_section_version(db, editor, "work")
+    for _ in range(2):
+        add_reference(
+            db, version_id, add_record_item(db, editor, "project"), "project", None
+        )
+
+    assert (
+        count_rows(
+            db,
+            section_version_item,
+            section_version_item.c.version_id == version_id,
+        )
+        == 2
+    )
+
+
+def test_a_referenced_item_cannot_be_deleted(db: Connection) -> None:
+    editor = add_staff(db)
+    version_id = add_section_version(db, editor, "work")
+    project_id = add_record_item(db, editor, "project")
+    add_reference(db, version_id, project_id, "project", None)
+
+    with pytest.raises(IntegrityError, match="section_version_item_fk"):
+        with db.begin_nested():
+            db.execute(sa.delete(content_item).where(content_item.c.id == project_id))
+
+    assert count_rows(db, content_item, content_item.c.id == project_id) == 1
+
+
+@pytest.mark.parametrize("table_name", list(CHILD_SECTION_KEY), ids=list(CHILD_SECTION_KEY))
+def test_a_child_row_is_editable_until_its_version_publishes(
+    db: Connection, table_name: str
+) -> None:
+    editor = add_staff(db)
+    table = SECTION_CHILD_TABLES[table_name]
+    version_id = add_child_version(db, editor, table_name)
+    column, value = next(iter(CHILD_EDIT[table_name].items()))
+
+    db.execute(
+        sa.update(table)
+        .where(table.c.version_id == version_id)
+        .values(**CHILD_EDIT[table_name])
+    )
+    edited = db.execute(
+        sa.select(table.c[column]).where(table.c.version_id == version_id)
+    ).scalar_one()
+    assert edited == value
+
+    publish_version(db, version_id, editor)
+
+    with pytest.raises(DBAPIError, match=IMMUTABLE_CONTENT):
+        with db.begin_nested():
+            db.execute(
+                sa.update(table)
+                .where(table.c.version_id == version_id)
+                .values(**CHILD_EDIT[table_name])
+            )
+
+    with pytest.raises(DBAPIError, match=IMMUTABLE_CONTENT):
+        with db.begin_nested():
+            db.execute(sa.delete(table).where(table.c.version_id == version_id))
+
+    assert count_rows(db, table, table.c.version_id == version_id) == 1
+
+
+def test_a_reference_is_editable_until_its_version_publishes(db: Connection) -> None:
+    editor = add_staff(db)
+    version_id = add_section_version(db, editor, "services")
+    item_id = add_record_item(db, editor, "service_group")
+    add_reference(db, version_id, item_id, "service_group", 0)
+
+    db.execute(
+        sa.update(section_version_item)
+        .where(section_version_item.c.version_id == version_id)
+        .values(sort_order=1)
+    )
+
+    publish_version(db, version_id, editor)
+
+    with pytest.raises(DBAPIError, match=PUBLISHED_SECTION):
+        with db.begin_nested():
+            db.execute(
+                sa.update(section_version_item)
+                .where(section_version_item.c.version_id == version_id)
+                .values(sort_order=0)
+            )
+
+    with pytest.raises(DBAPIError, match=PUBLISHED_SECTION):
+        with db.begin_nested():
+            db.execute(
+                sa.delete(section_version_item).where(
+                    section_version_item.c.version_id == version_id
+                )
+            )
+
+    assert (
+        count_rows(
+            db,
+            section_version_item,
+            section_version_item.c.version_id == version_id,
+        )
+        == 1
+    )
+
+
+def test_deleting_a_draft_version_cascades_every_child_row(db: Connection) -> None:
+    editor = add_staff(db)
+    versions: list[tuple[str, uuid.UUID]] = [
+        (table_name, add_child_version(db, editor, table_name))
+        for table_name in CHILD_SECTION_KEY
+    ]
+    reference_version = add_section_version(db, editor, "services")
+    add_reference(
+        db,
+        reference_version,
+        add_record_item(db, editor, "service_group"),
+        "service_group",
+        0,
+    )
+
+    for table_name, version_id in versions:
+        db.execute(sa.delete(content_version).where(content_version.c.id == version_id))
+        table = SECTION_CHILD_TABLES[table_name]
+        assert count_rows(db, table, table.c.version_id == version_id) == 0
+
+    db.execute(
+        sa.delete(content_version).where(content_version.c.id == reference_version)
+    )
+    assert (
+        count_rows(
+            db,
+            section_version_item,
+            section_version_item.c.version_id == reference_version,
+        )
+        == 0
+    )
+
+
 def test_every_documented_constraint_matches_its_definition(db: Connection) -> None:
     # Alembic 1.20 does not compare CHECK constraints, so the installed definitions are
     # compared here instead. Whitespace and the parentheses PostgreSQL adds are
@@ -745,7 +1508,10 @@ def test_every_documented_constraint_matches_its_definition(db: Connection) -> N
             sa.text(
                 "select conname, contype, pg_get_constraintdef(oid) from pg_constraint "
                 "where conrelid in ('page_section'::regclass, "
-                "'section_version'::regclass) "
+                "'section_version'::regclass, 'section_paragraph'::regclass, "
+                "'process_stage'::regclass, 'process_assurance'::regclass, "
+                "'faq_item'::regclass, 'contact_next_step'::regclass, "
+                "'section_version_item'::regclass) "
                 "and contype in ('p', 'u', 'c', 'f')"
             )
         ).all()
@@ -762,8 +1528,10 @@ def test_the_documented_indexes_and_predicates_are_installed(db: Connection) -> 
         name: normalise(definition)
         for name, definition in db.execute(
             sa.text(
-                "select indexname, indexdef from pg_indexes "
-                "where tablename in ('page_section', 'section_version')"
+                "select indexname, indexdef from pg_indexes where tablename in "
+                "('page_section', 'section_version', 'section_paragraph', "
+                "'process_stage', 'process_assurance', 'faq_item', "
+                "'contact_next_step', 'section_version_item')"
             )
         ).all()
     }
@@ -789,7 +1557,13 @@ def test_the_installed_triggers_fire_on_the_documented_events(db: Connection) ->
             sa.text(
                 "select tgname, tgrelid::regclass::text, tgtype, tgdeferrable, "
                 "tginitdeferred from pg_trigger where not tgisinternal and tgname in "
-                "('content_item_page_section_row', 'section_version_immutable')"
+                "('content_item_page_section_row', 'section_version_immutable', "
+                "'section_paragraph_section', 'process_stage_section', "
+                "'process_assurance_section', 'faq_item_section', "
+                "'contact_next_step_section', 'section_version_item_assert', "
+                "'section_paragraph_immutable', 'process_stage_immutable', "
+                "'process_assurance_immutable', 'faq_item_immutable', "
+                "'contact_next_step_immutable', 'section_version_item_immutable')"
             )
         ).all()
     }
@@ -812,4 +1586,59 @@ def test_the_installed_assert_page_section_row_pins_its_message(db: Connection) 
     ]:
         assert fragment in normalised, (
             f"the installed assert_page_section_row() is missing: {fragment}"
+        )
+
+
+@pytest.mark.parametrize(
+    ("function", "fragments"),
+    [
+        (
+            "assert_section_child()",
+            [
+                "select section_key into v_key",
+                "from section_version",
+                "where version_id = new.version_id",
+                "if v_key is null or v_key::text <> tg_argv[0] then",
+                "raise exception 'row belongs to section %, not %', v_key, tg_argv[0]",
+                "return new",
+            ],
+        ),
+        (
+            "assert_section_version_item()",
+            [
+                "v_version := case when tg_op = 'delete' then old.version_id else "
+                "new.version_id end",
+                "v_item_kind := case when tg_op = 'delete' then old.item_kind else "
+                "new.item_kind end",
+                "if tg_op = 'update' and (old.version_id <> new.version_id or "
+                "old.item_id <> new.item_id) then",
+                "raise exception 'a section reference cannot move between versions or "
+                "items'",
+                "select cv.status, ci.kind, ps.section_key",
+                "left join page_section ps on ps.item_id = cv.item_id",
+                "raise exception 'references belong to a page section version'",
+                "raise exception 'published section version is immutable'",
+                "raise exception 'section item has no page_section row'",
+                "if v_key = 'services' and v_item_kind = 'service_group' then",
+                "elsif v_key = 'work' and v_item_kind = 'project' then",
+                "elsif v_key = 'proof' and v_item_kind = 'proof_figure' then",
+                "elsif v_key = 'testimonials' and v_item_kind = 'testimonial' then",
+                "raise exception 'section % cannot reference a %', v_key, v_item_kind",
+            ],
+        ),
+    ],
+    ids=["assert_section_child", "assert_section_version_item"],
+)
+def test_the_installed_section_functions_pin_their_bodies(
+    db: Connection, function: str, fragments: list[str]
+) -> None:
+    definition = db.execute(
+        sa.text("select pg_get_functiondef(cast(:function as regprocedure))"),
+        {"function": function},
+    ).scalar_one()
+    normalised = normalise(definition)
+
+    for fragment in fragments:
+        assert normalise(fragment) in normalised, (
+            f"the installed {function} is missing: {fragment}"
         )
