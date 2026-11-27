@@ -12,13 +12,17 @@ savepoint: the savepoint's rollback keeps the outer test transaction clean, and 
 ``DBAPIError`` is the failure a real commit would produce.
 
 The SQL is pinned twice: behaviour is exercised through inserts, updates and deletes, and
-the installed constraint, index, trigger and function definitions are compared with
+the installed constraint, index and trigger definitions are compared with
 Backend/docs/DATABASE.md so a weakened expression fails a test even where a behaviour case
 happens not to reach it. The seven section guard functions are compared by their exact
-installed body, loaded from the migration's own SQL constants.
+installed body instead, loaded from the SQL constants in
+Backend/migrations/versions/0005_page_sections.py; those constants carry the same SQL as
+DATABASE.md today, and the expected function list is derived from them, so a function
+added to the revision cannot escape the pin.
 """
 
 import importlib.util
+import re
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -581,6 +585,11 @@ SECTION_MIGRATION = (
     / "0005_page_sections.py"
 )
 
+# What every guard constant installs. The pin derives its expected function names from the
+# revision with this rather than trusting the hand-written map, so a new guard cannot slip
+# past the comparison.
+FUNCTION_INSTALL = re.compile(r"create or replace function (\w+)")
+
 # Every section key with a row that uses only the columns its key allows. About also needs
 # a media row, inserted by the test.
 SECTION_COPY: list[tuple[str, dict[str, str], bool]] = [
@@ -671,6 +680,16 @@ def load_section_migration() -> ModuleType:
 def function_body(definition: str) -> str:
     """The plpgsql text between the first ``as $$`` and the closing ``$$``."""
     return definition.split("as $$", 1)[1].rsplit("$$", 1)[0]
+
+
+def migration_function_names(migration: ModuleType) -> set[str]:
+    """Every function the revision installs, found in its module-level SQL constants."""
+    return {
+        name
+        for value in vars(migration).values()
+        if isinstance(value, str)
+        for name in FUNCTION_INSTALL.findall(value)
+    }
 
 
 def add_staff(db: Connection) -> uuid.UUID:
@@ -2120,7 +2139,10 @@ def test_the_installed_assert_page_section_row_pins_its_message(db: Connection) 
 
 def test_the_installed_section_functions_pin_their_bodies(db: Connection) -> None:
     migration = load_section_migration()
+    # The map is the pin list. Deriving the revision's functions means an eighth guard
+    # fails this assertion until it is added to the map, rather than escaping the query.
     assert len(SECTION_FUNCTION_BODIES) == 7
+    assert set(SECTION_FUNCTION_BODIES) == migration_function_names(migration)
 
     installed = dict(
         db.execute(

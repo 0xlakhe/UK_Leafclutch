@@ -75,7 +75,8 @@ No migration content changes. The suite still applies `alembic upgrade head` onc
   and promotion paths. Both mutation proofs ran on scratch copies of `leafclutch_test`
   (`leafclutch_scratch_regroup_test`, `leafclutch_scratch_bound_test`) and both were
   dropped afterwards; the real test database was not altered. `tests/test_media_schema.py`
-  is 59 tests; the suite is 326.
+  is 59 tests; the suite is 326. Correction (review Low): the recorded regrouping SQL
+  changes meaning, not only grouping; see Mutation 1 under Tests.
 - **2026-11-28 — Step 2: content-spine behavioural pins.** `Backend/tests/test_content_spine.py`
   now pins the five L1 gaps: a published version with a `content_seo` row cannot be
   deleted and the SEO row survives; a published version stays undeletable after its
@@ -113,7 +114,20 @@ No migration content changes. The suite still applies `alembic upgrade head` onc
   kept. The test asserts the map holds seven functions and that the installed set equals
   the map. The older standalone fragment pin for `assert_page_section_row()` stays: it is
   a separate message-level check and the brief scoped the replacement to the parametrised
-  loop. `tests/test_page_sections.py` is 114 tests; the suite is 340.
+  loop. `tests/test_page_sections.py` is 114 tests; the suite is 340. Review Low: the
+  expected function set is now derived from the migration, so an eighth guard fails the
+  pin; see the review-Low entry below.
+- **2026-11-28 — Review Lows: the body pin derives its function list.** Closing the review
+  Lows on step 3. `Backend/tests/test_page_sections.py`'s module docstring now separates
+  the two pins: the installed constraint, index and trigger definitions are compared with
+  `Backend/docs/DATABASE.md`, while the seven function bodies are compared with the
+  `0005_page_sections.py` constants, which carry the same SQL today.
+  `migration_function_names` derives the expected names from the revision — every
+  module-level string matching `create or replace function (\w+)` — and the pin asserts the
+  seven-entry map equals that set before comparing `prosrc`. The seven entries are
+  unchanged. The recorded media mutation is corrected under Mutation 1: it changes
+  meaning, and the reviewer's semantically equivalent clause reorder is the evidence that
+  the parenthesis-preserving normaliser rejects a regrouping.
 
 ## Decisions made
 
@@ -236,6 +250,15 @@ old normaliser still considers the two definitions equal, the new one does not:
 old normaliser equal: True
 new normaliser equal: False
 ```
+
+**Correction (review Low).** The mutation above is not a pure regrouping. Under
+`visibility = 'public' and (bucket = 'site-media' or visibility = 'private') and bucket in
+('media-staging', 'evidence')` a public row cannot satisfy every conjunct, so no public row
+can be stored: the statement changes meaning as well as grouping. It still proves the
+normaliser keeps PostgreSQL's parentheses, but the equivalence evidence is the reviewer's
+second probe — the two OR branches swapped, which is semantically equivalent — and the
+parenthesis-preserving normaliser rejected that as well. Neither probe was re-run in this
+commit.
 
 **Mutation 2 — `media_object_path` bound 300 → 299.** On
 `leafclutch_scratch_bound_test` the bound was lowered; the catalog test still fails:
@@ -419,6 +442,64 @@ The correct body was restored from `ASSERT_PAGE_SECTION_POSITION_SQL` (the pin p
 again) and the scratch database was dropped. The real `leafclutch_test` and `leafclutch`
 databases were not altered.
 
+Review-Low runs on 2026-11-28 (same PostgreSQL 18.7 target):
+
+```
+$ uv run ruff check .
+All checks passed!
+
+$ uv run mypy app
+Success: no issues found in 6 source files
+```
+
+```
+$ uv run pytest -q
+........................................................................ [ 21%]
+........................................................................ [ 42%]
+........................................................................ [ 63%]
+........................................................................ [ 84%]
+....................................................                     [100%]
+340 passed, 4 warnings in 1.74s
+
+$ uv run pytest -q --import-mode=importlib
+........................................................................ [ 21%]
+........................................................................ [ 42%]
+........................................................................ [ 63%]
+........................................................................ [ 84%]
+....................................................                     [100%]
+340 passed, 4 warnings in 1.49s
+
+$ uv run alembic check
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+INFO  [alembic.runtime.plugins] setting up autogenerate plugin alembic.autogenerate.schemas
+INFO  [alembic.runtime.plugins] setting up autogenerate plugin alembic.autogenerate.tables
+INFO  [alembic.runtime.plugins] setting up autogenerate plugin alembic.autogenerate.types
+INFO  [alembic.runtime.plugins] setting up autogenerate plugin alembic.autogenerate.constraints
+INFO  [alembic.runtime.plugins] setting up autogenerate plugin alembic.autogenerate.defaults
+INFO  [alembic.runtime.plugins] setting up autogenerate plugin alembic.autogenerate.comments
+No new upgrade operations detected.
+```
+
+The totals stay 340: the pin test was strengthened, not added. The eighth-function probe
+appended a `FUTURE_GUARD_SQL` constant defining `future_guard()` to
+`0005_page_sections.py`, ran the pin, and restored the file with
+`git checkout -- migrations/versions/0005_page_sections.py`; `git status` then showed only
+`tests/test_page_sections.py`. The suite's own `alembic upgrade head` had already run, so
+the probe needed no schema change.
+
+```
+$ uv run pytest -q tests/test_page_sections.py::test_the_installed_section_functions_pin_their_bodies
+>       assert set(SECTION_FUNCTION_BODIES) == migration_function_names(migration)
+E       AssertionError: assert {'assert_page...ion_key', ...} == {'assert_page...ion_key', ...}
+E         Extra items in the right set:
+E         'future_guard'
+FAILED tests/test_page_sections.py::test_the_installed_section_functions_pin_their_bodies
+1 failed, 1 warning in 0.29s
+```
+
+After the restore the same test passed: `1 passed, 1 warning in 0.18s`.
+
 ## Review
 
 ## Docs updated
@@ -427,7 +508,9 @@ databases were not altered.
   §Section copy already describe the committed behaviour and the seven guard functions.
   `DATABASE.md`, `CONTRACT.md`, `ADMIN.md` and OpenAPI are unchanged.
 - `Backend/tests/test_page_sections.py`'s module docstring now says which cases commit
-  through `database_engine` and why.
+  through `database_engine` and why, and it separates the two pins: constraint, index and
+  trigger definitions against `DATABASE.md`, function bodies against the migration
+  constants.
 
 ## Remaining
 
