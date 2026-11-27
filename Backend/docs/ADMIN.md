@@ -194,7 +194,7 @@ badges ("awaiting approval", "approval missing", "expired", "revoked") come from
 | `/admin/proof/[kind]/[itemId]` | One proof item | Admin, Editor | as above |
 | `/admin/faqs` | FAQ items inside the FAQ section draft | Admin, Editor | inside 5–8 (ok), outside (warning) |
 | `/admin/media` | Library, staged and public, with usage | Admin, Editor | uploading, staged, public, unused, deleted |
-| `/admin/media/[id]` | Alt text, dimensions, usage, replace | Admin, Editor | editing alt (creates a new row), in use |
+| `/admin/media/[id]` | Alt text, dimensions, usage, replace action | Admin, Editor | editing alt (creates a new row), in use, replacing |
 | `/admin/enquiries` | Enquiry list and filters | Admin | loading, empty, filtered, error |
 | `/admin/enquiries/[id]` | Detail, status, notes, first reply, delete | Admin | new, in progress, closed |
 | `/admin/settings` | Site frame and legal identity | Admin | draft, live, incomplete identity, blocked |
@@ -202,7 +202,7 @@ badges ("awaiting approval", "approval missing", "expired", "revoked") come from
 | `/admin/audit` | Audit log and sign-in log | Admin | loading, filtered, empty |
 | `/admin/account` | Own MFA, password, session | Admin, Editor | enrolled, not enrolled, reset |
 | `/admin/sign-in` | Supabase sign-in | signed out | credentials, MFA challenge, error, locked |
-| `/preview<path>` | Renders a draft through FastAPI (Next catch-all) | Admin, Editor | draft, blocked fields, staged media |
+| `/preview<path>` | Renders a draft through FastAPI (Next catch-all) | Admin, Editor (settings: Admin) | draft, blocked fields, staged media |
 
 ### Shared screen behaviour
 
@@ -321,7 +321,7 @@ envelope and the admin set extends it.
 | GET | `/me` | Who am I, MFA state, role | any staff | — | `staff_account` row | `no-store` | `staff_account` view |
 | GET | `/dashboard` | Counts and alerts | both | — | drafts, in review, new enquiries, expiring approvals, failed revalidation | `no-store` | reads `content_version`, `content_publication`, `approval`, `enquiry`, `revalidation` |
 | GET | `/content` | List items | both (legal_page/settings: Admin) | `kind`, `status`, `q`, `archived`, `page`, `per_page`, `sort` | paginated items | `no-store` | `content_item`, `content_version` (+ typed table) |
-| POST | `/content` | Create an item and its first draft | both (legal_page: Admin) | `{kind, path?, slug?}` | item, draft, `ETag` | `no-store` | `insert into content_item`, then `create_draft` |
+| POST | `/content` | Create an item and its first draft | both (legal_page: Admin) | `{kind, path, slug}` | item, draft, `ETag` | `no-store` | `insert into content_item`, then `create_draft` |
 | GET | `/content/{item_id}` | Item, open version, live version, children | both (legal_page/settings: Admin) | — | item, version, typed body, children, `revision`, `ETag` | `no-store` | `content_item`, `content_version`, `content_publication`, typed table |
 | GET | `/content/{item_id}/versions` | Version history | both (legal_page/settings: Admin) | `page` | versions with author and dates | `no-store` | `content_version` |
 | GET | `/content/{item_id}/versions/{version_id}` | One version, read-only | both (legal_page/settings: Admin) | — | typed body and children | `no-store` | `content_version` + typed table |
@@ -361,7 +361,10 @@ envelope and the admin set extends it.
 | GET | `/audit` | Audit log | Admin | `actor`, `action`, `entity_kind`, `entity_id`, `from`, `to`, `page` | paginated rows | `no-store` | `audit_log` |
 | GET | `/sign-ins` | Sign-in log | Admin | `staff_id`, `outcome`, `from`, `to`, `page` | paginated rows | `no-store` | `sign_in_event` |
 | GET | `/revalidation` | Queue state | Admin | `status`, `page` | pending, failed, dead rows | `no-store` | `revalidation` |
-| GET | `/preview` | Draft payload for a path | both (legal_page: Admin) | `path` | public shape with drafts, `preview: true` | `no-store` | published tables + draft typed rows (read only) |
+| GET | `/preview` | Draft payload for a path | both (legal_page/settings: Admin) | `path` | public shape with drafts, `preview: true` | `no-store` | published tables + draft typed rows (read only) |
+
+On create, `path` is required for `landing_page` and `legal_page`, and `slug` for
+`service` and `project`; a `page_section` takes neither (`DATABASE.md:348-353`).
 
 Universal failures are not repeated per row. Every endpoint can return
 `401 unauthenticated`, `403 forbidden`, `403 account_inactive`, `404 not_found`,
@@ -678,7 +681,7 @@ Leafclutch proposals recorded in `CONTRACT.md`, not PRD requirements.
 
 Media picker states: idle, uploading with progress, staged (badge "Publishes with the
 page"), public, unused, alt-text error, type/size/pixel error, upload failed with retry,
-and "replace" (creates a new row).
+and the replace action (creates a new row).
 
 ## 8. Enquiries
 
@@ -739,7 +742,7 @@ below live on `settings_version` and its child rows in `DATABASE.md`.
 | Record | Written by | Contents | Read by |
 | --- | --- | --- | --- |
 | `audit_log` | FastAPI, in the action's transaction | actor, action, entity kind and id, version, page, path, revision, affected rows, time | `/admin/audit`, Admins |
-| `sign_in_event` | FastAPI on every sign-in attempt | staff id (null if unknown), outcome, IP hash, user-agent hash, time | `/admin/sign-ins`, Admins |
+| `sign_in_event` | FastAPI on every sign-in attempt | staff id (null if unknown), outcome, IP hash, user-agent hash, time | `/admin/audit` (sign-ins tab), Admins |
 
 - Recorded actions: role changes, publishes, unpublishes, archives, restores, content
   deletes, legal approvals, approval records and revocations, media promotion and
@@ -927,8 +930,9 @@ Also open and visible in the admin:
   `nepal_site_url` exists.
 - The typed 1-working-day promise (one typed `next_steps` item or four free ones;
   `CONTRACT.md` decision 39; D-11).
-- Settings can be unpublished while the landing page is live, which would empty the site
-  frame and legal identity; a gate needs a decision.
+- Settings can be unpublished while the landing page is live, which empties the site
+  frame and legal identity until republished. Accepted 27 November: no two-way gate; the
+  risk is recorded, not mitigated.
 - A constrained legal link block (open question 2).
 - At least one screenshot per project (open question 5).
 

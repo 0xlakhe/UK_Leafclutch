@@ -1973,11 +1973,12 @@ create trigger staff_last_admin
 
 The statement trigger takes a transaction-scoped advisory lock before the row locks its own
 statement takes, so two staff writers serialise instead of forming a lock cycle. It covers
-INSERT as well, because a `created_by` foreign key takes a key-share lock on an Admin row
-before that statement needs the advisory lock. The trigger cannot reorder a lock the caller
+INSERT as well: the insert's own `created_by` foreign key takes a key-share lock on an
+Admin row after this trigger, so without INSERT coverage a transaction could hold that
+key-share and only take the advisory lock at a later staff write, forming the cycle. The trigger cannot reorder a lock the caller
 already holds: any staff service must either take
 `pg_advisory_xact_lock(hashtext('staff_last_admin'))` before its first staff row lock or
-retry `40P01` with a bounded backoff (PLAN.md M15). The lock is held to commit, so a long
+retry `40P01` with a bounded backoff (Backend/docs/work/PLAN.md M15). The lock is held to commit, so a long
 staff transaction blocks every other staff writer; keep staff write transactions short. The
 row trigger counts active Admins other than the row being changed with a locking read: under
 READ COMMITTED the statement lock already serialises, and under REPEATABLE READ or

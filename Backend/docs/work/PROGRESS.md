@@ -361,5 +361,28 @@ Round 4: no Critical, High or Medium; mutation proves the new test fails with `4
 
 Limits: Supabase was not run; the design workspace copy of `DATABASE.md` still differs; no admin service exists to exercise `40001` handling.
 
+---
+
+## Sync: design-workspace divergence closed
+
+Status: done
+Date: 2026-11-27
+
+Changed:
+- `Backend/docs/CONTRACT.md`, `ADMIN.md` and `DATABASE.md` replaced with the design workspace's `75dcc0c`.
+
+Evidence:
+- `sha256sum` identical for all three; `PRD.md` and both runbooks were already identical.
+- Present: `hours.summary`; `title` 40, `body` 160; `{kind, path, slug}`; `both (legal_page/settings: Admin)`; `sign-ins tab`; `no two-way gate`; "after this trigger"; `Backend/docs/work/PLAN.md M15`.
+- Absent, zero occurrences: `phone_hours.summary`; `path?, slug?`; `/admin/sign-ins`; `a gate needs a decision`.
+- Design workspace: `120fbaf` applied the M2 guard; `75dcc0c` clarified the INSERT sentence and the PLAN citation.
+
+Decisions:
+- The two repositories are now identical for the four documents and both runbooks. The M2 note that the design workspace still carried the unguarded body is resolved, and the next sync will not revert the guard.
+
+Remaining: none.
+Next: M3 — media.
+
+
 
 

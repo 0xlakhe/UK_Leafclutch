@@ -1099,7 +1099,7 @@ below is the readable copy, not a second place to edit.
 | `nav_label`                                         | 24 characters                                                              | proposed                        |
 | section `heading`                                   | 70 characters                                                              | proposed                        |
 | section `intro`                                     | 200 characters, one sentence                                               | proposed                        |
-| `next_steps`                                        | 1–4 items; `title` 80, `body` 200                                     | decided count, proposed lengths |
+| `next_steps`                                        | 1–4 items; `title` 40, `body` 160                                     | decided; matches `DATABASE.md` |
 | `privacy_note.text`                                 | 240 characters                                                             | proposed                        |
 | `privacy_note.link_label`                           | 40 characters                                                              | proposed                        |
 | service `title`                                     | 60 characters                                                              | proposed                        |
@@ -1108,7 +1108,7 @@ below is the readable copy, not a second place to edit.
 | location `name`                                     | 60 characters                                                              | proposed                        |
 | location `phone`                                    | 32 characters, E.164 formatted                                             | proposed                        |
 | contact `phone`                                     | 32 characters, E.164 formatted, optional; requires `phone_hours`         | proposed                        |
-| contact `phone_hours.summary`                       | 120 characters, with `timezone` `Europe/London`                        | proposed                        |
+| contact `hours.summary`                       | 120 characters, with `timezone` `Europe/London`                        | proposed                        |
 | form `name`                                         | 1–100                                                                     | proposed                        |
 | form `email`                                        | 254                                                                        | proposed                        |
 | form `company`                                      | 0–120, optional                                                           | proposed                        |
