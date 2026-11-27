@@ -12,6 +12,7 @@ reviewed and done. See `AGENTS.md` → "Documentation — a work file per task".
 | 0005 | Sync reviewed CONTRACT and ADMIN from the design workspace | done | 2026-11-27 |
 | 0006 | Archive a landing page whose sections are still live | done | 2026-11-27 |
 | 0007 | Landing page sections | done | 2026-11-27 |
+| 0008 | Close the deferred test-strength items | in-progress | 2026-11-27 |
 
 `PROGRESS.md` is the chronological reading copy in the EventBook format; the numbered
 files are canonical. `TEMPLATE.md` is the shape for a new task file.
