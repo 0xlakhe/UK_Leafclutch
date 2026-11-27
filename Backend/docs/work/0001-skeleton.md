@@ -90,6 +90,13 @@ pydantic-settings.
   run. `python-dotenv` is now a declared dev dependency. 20 tests pass; the production-URL
   run fails collection with the guard message, and the clean-environment run passes on the
   `.env` port 5434.
+- **2026-11-27 — Query-override guard (recheck).** Closed the SQLAlchemy query-parameter
+  bypass: a non-empty `parsed.query` is refused before any other check, `POSTGRES_PORT` is
+  validated as a decimal port in 1–65535 before the URL is built, parse failures are
+  generic with `from None`, and `.env` is read with `interpolate=False`. Added `tests` to
+  pytest's `pythonpath` so `--import-mode=importlib` works, and replaced the in-process
+  environment assertion with a subprocess force test. 29 tests pass in both import modes;
+  the query-bypass run fails collection and no message contains the password.
 
 ## Decisions made
 
@@ -128,8 +135,13 @@ pydantic-settings.
   `127.0.0.1` with the port from `POSTGRES_PORT` (environment, then only that key from
   `Backend/.env`, then 5432) and the `leafclutch_test` database. An exported `DATABASE_URL`
   is never the target and is validated only so a production or non-loopback value stops
-  the run. The derived host is `127.0.0.1`, matching the IPv4-only Compose bind instead of
-  relying on libpq's `localhost` fallback.
+  the run. Every candidate must have no query parameters (SQLAlchemy lets `?host=` and
+  `?dbname=` override the target), a database ending in `_test`, and a loopback host. The
+  port is validated as a decimal integer in 1–65535 before the URL is built, `.env` is
+  read without interpolation, and parse failures never echo the URL or chain the parser
+  error. Parsed refusals print the URL with the password redacted. The derived host is
+  `127.0.0.1`, matching the IPv4-only Compose bind instead of relying on libpq's
+  `localhost` fallback.
 - `log_level` is removed from `Settings` and `.env.example`: nothing consumed it. Logging
   configuration arrives with M20, when there is a real consumer. `environment` stays.
 - `test_unknown_route_returns_404` is deleted: it asserts Starlette's routing, not this
@@ -197,6 +209,14 @@ Recheck (test-target guard):
 - `Backend/tests/test_conftest.py` — replaced with guard and port tests
 - `Backend/docs/work/0001-skeleton.md` — this record
 
+Query-override recheck:
+
+- `Backend/pyproject.toml` — `tests` added to pytest's `pythonpath`
+- `Backend/tests/database_target.py` — query refusal, port validation, generic parse
+  errors, `.env` without interpolation
+- `Backend/tests/test_conftest.py` — bypass, malformed-URL, port and subprocess tests
+- `Backend/docs/work/0001-skeleton.md` — this record
+
 `Backend/.gitignore` already contained the Python ignores and was left as it was.
 
 ## Migrations
@@ -207,8 +227,8 @@ exists and no table is created; `Base.metadata` stays empty until M2.
 
 ## Tests
 
-The block below is an **actual run** from the recheck round. The earlier 14-test block is
-**superseded**.
+The block below is an **actual run** from the query-override recheck. The earlier 20-test
+block is **superseded**.
 
 ```
 $ uv run ruff check .
@@ -217,13 +237,11 @@ All checks passed!
 $ uv run mypy app
 Success: no issues found in 5 source files
 
-$ uv run pytest
-collected 20 items
-tests/test_config.py .....                                               [ 25%]
-tests/test_conftest.py ........                                          [ 65%]
-tests/test_db.py .....                                                   [ 90%]
-tests/test_health.py ..                                                  [100%]
-======================== 20 passed, 1 warning in 0.26s =========================
+$ uv run pytest -q
+29 passed, 1 warning in 0.39s
+
+$ uv run pytest -q --import-mode=importlib
+29 passed, 1 warning in 0.30s
 ```
 
 The warning is the known one:
@@ -240,58 +258,72 @@ database URL (proves liveness does not touch the database); required `DATABASE_U
 unknown environment rejected; defaults; cached settings; settings read from the
 environment; engine URL; session factory binding; `get_session` using the factory on
 `app.state`; lifespan storing and disposing the engine. Test-target guard: an explicit
-`TEST_DATABASE_URL` is accepted; a non-`_test` database is refused; a non-loopback host is
-refused; an ambient production `DATABASE_URL` is refused with its password redacted; an
-ambient test URL is not used as the target; `POSTGRES_PORT` comes from the environment or
-the `.env` file with the environment winning; `ENVIRONMENT` is forced to `test`. The
-framework-only 404 test and the `log_level` default assertion are removed per review. Role
-and empty-state tests are not applicable: M1 has no auth, collections or tables.
+`_test` URL is accepted; a non-`_test` database is refused; a non-loopback host is
+refused; a query override is refused; an invalid or out-of-range `POSTGRES_PORT` is
+refused; a malformed URL is refused without its password in the message; `.env`
+interpolation is disabled; an ambient production `DATABASE_URL` is refused; an ambient
+test URL is not used as the target; the port comes from the environment or `.env` with the
+environment winning; and a subprocess proves `ENVIRONMENT=production` is forced to `test`.
+The framework-only 404 test and the `log_level` default assertion remain removed. Role and
+empty-state tests are not applicable: M1 has no auth, collections or tables.
 
-Guard check — an exported production `DATABASE_URL` must fail collection:
+Query bypass — must fail collection:
 
 ```
-$ DATABASE_URL=postgresql+psycopg://prod:prod@db.production.example:5432/leafclutch uv run pytest
+$ TEST_DATABASE_URL="postgresql+psycopg://leafclutch:leafclutch@127.0.0.1:1/leafclutch_test?host=db.production.example&dbname=leafclutch" uv run pytest -q
 ImportError while loading conftest '.../Backend/tests/conftest.py'.
 tests/conftest.py:18: in <module>
     os.environ["DATABASE_URL"] = resolve_test_database_url(os.environ, ENV_FILE)
 ...
-E   RuntimeError: Refusing database URL 'postgresql+psycopg://prod:***@db.production.example:5432/leafclutch': the database name must end in '_test'.
+E   RuntimeError: Refusing test database URL: query parameters can override the connection target and are not allowed.
 exit=4
 ```
 
-Clean environment — passes and derives the port from `.env`:
+Guard messages, from direct calls with the rejected inputs:
+
+```
+query: Refusing test database URL: query parameters can override the connection target and are not allowed.
+port: Refusing POSTGRES_PORT: it must be a decimal integer between 1 and 65535.
+parse: Refusing test database URL: it is not a valid SQLAlchemy URL.
+interpolation: Refusing POSTGRES_PORT: it must be a decimal integer between 1 and 65535.
+```
+
+`ENVIRONMENT=production` force, in a fresh subprocess:
+
+```
+$ env -u DATABASE_URL -u POSTGRES_PORT -u TEST_DATABASE_URL ENVIRONMENT=production PYTHONPATH=tests uv run python - <<'PY'
+import importlib.util
+import os
+
+spec = importlib.util.spec_from_file_location("conftest_force", "tests/conftest.py")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+print(os.environ["ENVIRONMENT"])
+PY
+test
+exit=0
+```
+
+Clean environment still passes on the `.env` port:
 
 ```
 $ env -u DATABASE_URL -u ENVIRONMENT -u POSTGRES_PORT uv run pytest -q
-....................                                                     [100%]
-20 passed, 1 warning in 0.17s
+29 passed, 1 warning in 0.39s
 exit=0
-
-$ env -u DATABASE_URL -u POSTGRES_PORT ENVIRONMENT=production uv run pytest -q
-20 passed, 1 warning in 0.27s
-exit=0
-
-$ env -u DATABASE_URL -u ENVIRONMENT -u POSTGRES_PORT PYTHONPATH=tests \
-    uv run python -c "import os; from pathlib import Path; from database_target import resolve_test_database_url; print(resolve_test_database_url(os.environ, Path('.env')))"
-postgresql+psycopg://leafclutch:leafclutch@127.0.0.1:5434/leafclutch_test
 ```
 
-The local `.env` is git-ignored and sets `POSTGRES_PORT=5434`, which the resolved URL
-shows. Compose and Alembic remain current:
+Compose and Alembic remain healthy:
 
 ```
 $ docker compose ps
 NAME              IMAGE         COMMAND                  SERVICE   CREATED          STATUS                    PORTS
-leafclutch-db-1   postgres:16   "docker-entrypoint.s…"   db        17 minutes ago   Up 17 minutes (healthy)   127.0.0.1:5434->5432/tcp
+leafclutch-db-1   postgres:16   "docker-entrypoint.s…"   db        37 minutes ago   Up 37 minutes (healthy)   127.0.0.1:5434->5432/tcp
 
 $ uv run alembic current
 INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
 INFO  [alembic.runtime.migration] Will assume transactional DDL.
 exit=0
 ```
-
-The initdb databases (`leafclutch`, `leafclutch_test`) still exist; the volume was not
-recreated, so the init script did not rerun.
 
 ## Review
 
@@ -311,9 +343,10 @@ recreated, so the init script did not rerun.
 
 ## Remaining
 
-The recheck found two remaining items: the unguarded test target and the Low items. Both
-are fixed in this commit and evidenced in `## Tests`. What remains is the orchestrator's
-re-review; no acceptance criterion, deferred finding or unrun check is outstanding.
+The recheck found a High (query parameters could override the target while validation
+passed) and two Low items. All are fixed in this commit and evidenced in `## Tests`. What
+remains is the orchestrator's re-review; no acceptance criterion, deferred finding or
+unrun check is outstanding.
 
 ## Next
 
@@ -330,5 +363,5 @@ re-review; no acceptance criterion, deferred finding or unrun check is outstandi
 - The default Compose port 5432 — this machine cannot bind it (native PostgreSQL 18), so
   only the `POSTGRES_PORT=5434` override was verified end to end.
 - Database-backed tests — M1 has none; the suite constructs an engine but opens no
-  connection. The clean-environment run above prints the resolved test URL but does not
-  connect to it.
+  connection. The guard and its resolution are unit-tested; no test opens the resolved
+  URL.
