@@ -1,7 +1,7 @@
 ---
 task: 0001
 title: FastAPI skeleton and local database
-status: in-progress
+status: done
 branch: prabesh
 started: 2026-11-27
 updated: 2026-11-27
@@ -327,6 +327,50 @@ exit=0
 
 ## Review
 
+Four rounds with one independent reviewer session. Every Critical, High and Medium is
+closed. Four Low items remain, deferred with triggers.
+
+Round 1 (`f5fe65e..79d68f3`): no Critical or High. Three Medium — Compose published the
+database on `0.0.0.0` with a repo-known password; the test bootstrap hardcoded 5432 and
+overrode any external `DATABASE_URL`; `DATABASE.md` still called the data layer
+unconfirmed. Seven Low. Fixed in `06b61b6`.
+
+Round 2 (`79d68f3..06b61b6`): eight of ten closed. Two Medium remained: `setdefault`
+accepted any exported `DATABASE_URL`, including production, which would become High once
+M2 adds a database-backed test; and the documented `.env` port was not honoured. Guard
+added in `af66155`.
+
+Round 3 (`06b61b6..af66155`): one High — SQLAlchemy query parameters
+(`?host=...&dbname=...`) passed validation while the connection went elsewhere; malformed
+URLs printed their password, and `.env` interpolation could pull one in. Fixed in
+`44c4d5e`.
+
+Round 4 (`af66155..44c4d5e`): High closed, password redaction closed, port injection
+closed, importlib mode and the force test fixed.
+
+Deferred Low findings:
+
+1. **Query rejection also blocks legitimate options** (`?sslmode=require`,
+   `?connect_timeout=5`). Deferred until CI exists (M21) and a managed test database needs
+   TLS. Do not replace the blanket refusal with a blocklist without a test per allowed key.
+2. **The `_test` suffix accepts `prod/leafclutch_test`.** Accepted as a naming convention,
+   not a security boundary: a tunnel or an identically named production database cannot be
+   told apart by URL. The real boundary is that no production credential is in the
+   repository.
+3. **An empty `?` or `?x=` is accepted while the message says queries are not allowed.**
+   Deferred: neither can override the target (checked through `create_connect_args`); the
+   wording is to be tightened when the guard is next touched.
+4. **The interpolation test does not distinguish disabled interpolation from a later
+   rejection.** Deferred: the code is correct and the behaviour was proven manually;
+   replace it with a `${PORT}` case when the file is next touched.
+
+Verified by the orchestrator after round 4: 29 tests pass in default and
+`--import-mode=importlib`; query override and port injection fail collection with their
+own rules; a malformed URL carrying `supersecret` produces a message containing the
+password zero times; `alembic current` exits 0.
+
+Outcome: **accepted**. No open Critical or High.
+
 ## Docs updated
 
 - `Backend/README.md`: setup, run, checks (including the test-target guard), database
@@ -343,12 +387,12 @@ exit=0
 
 ## Remaining
 
-The recheck found a High (query parameters could override the target while validation
-passed) and two Low items. All are fixed in this commit and evidenced in `## Tests`. What
-remains is the orchestrator's re-review; no acceptance criterion, deferred finding or
-unrun check is outstanding.
+None. Every acceptance criterion is met; the four residual Low findings are deferred with
+reasons in `## Review`.
 
 ## Next
+
+M2 — extensions, enums and `staff` (`PLAN.md`).
 
 ## Open questions
 
