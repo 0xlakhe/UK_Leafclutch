@@ -23,6 +23,47 @@ deployed.
 Note: `DATABASE.md` writes `cd api` in its command examples because it was written before
 the team folder layout. In this repository the path is `Backend`.
 
+## Traceability
+
+Every PRD requirement ID mapped to the milestone that implements it and the check that
+proves it. A requirement with no row is a gap, not something to explain away. "Frontend"
+means the backend supplies the data and another folder renders it; it is still listed so
+nothing is lost between teams.
+
+| PRD area | IDs | Milestones | Proven by | Notes |
+| --- | --- | --- | --- | --- |
+| Landing page | LP-1–LP-5 | M5, M11, M14, M16 | Ten sections insert in PRD §5 order; page publish test; contract test | LP-5's five-to-eight rule is a CMS warning, not a publish gate |
+| Navigation and footer | NV-1–NV-4 | M14, M16, M20 | Nav labels and footer links in the contract | Sticky header, mobile menu and focus states are frontend |
+| Services and work | SV-1–SV-7 | M6, M11, M14, M16 | Service projection and unique title; approval per project | SV-2 products out of scope (decision 67); SV-6/SV-7 Phase 2 |
+| Enquiries | EN-1–EN-10 | M9, M14, M18 | Validation, rate limit, outbox, first-reply timestamp | EN-10 booking left undelivered (decision 46); EN-1/3/6 are frontend copy |
+| Admin | AD-1–AD-12 | M8, M15, M16, M20 | Role matrix, publish gates, audit rows | AD-11 not approved; AD-12 Phase 2 |
+| Security | SE-1–SE-12 | M12, M15, M16, M18, M20, M21 | Anonymous isolation, role checks, `no-store`, secrets scan | SE-1/9/11 are deployment and ops; SE-12 is the preview path |
+| Non-functional | NF-1–NF-9 | M14, M20 | Contract, caching, unique SEO title (a FastAPI check) | NF-1–4 and NF-9 are frontend; NF-8 locale codes still open |
+| Legal and policy pages | PRD §12 | M7, M19, M11 | Legal publish gate and `/routes` | Copy is blocked on D-7 |
+| Brand | DS-1–DS-5 | M7, M14 | Logo slot in settings and the contract | UI owns the rest |
+| Measurement | SM-1–SM-5 | M18, M20 | `first_replied_at`, audit rows | Targets are the PRD's proposals |
+
+`PRD.md` wraps IDs across lines (`EN-` on one line, `2` on the next), so `grep 'EN-2'`
+misses half of them. Normalise before counting: `perl -0pi -e 's/([A-Z]{2,4})-\s*\n\s*(\d+)/$1-$2/g'`
+on a copy, or parse with that substitution.
+
+## Review focus
+
+The traps that comparable builds get wrong. Each review checks the ones belonging to its
+milestone; "looks correct in the diff" is not evidence.
+
+| # | Trap | Milestone | What the review must see |
+| --- | --- | --- | --- |
+| 1 | Anonymous isolation leaks | M12, M14, M21 | A test that calls the public endpoint as `anon` and `authenticated` and gets nothing from drafts, users, enquiries, evidence or audit |
+| 2 | Approval lifecycle | M8, M11, M16 | Publish refused without approval; expiry hides the item and queues revalidation; revocation does not unpublish |
+| 3 | Repeat and concurrent transitions | M11, M16 | Publish, unpublish, archive and restore called twice, and concurrently, leave exactly one live version |
+| 4 | Migration order | M2–M13 | Upgrade and downgrade from empty; every trigger resolves functions from its own or an earlier revision |
+| 5 | Legal identity gate | M7, M19 | Null refused at publish; a blank or whitespace string refused by Pydantic, with a test |
+| 6 | Section publishing | M11, M16 | A page publish takes the chosen section versions; a draft section keeps its live version; a never-published section blocks the page |
+| 7 | Enquiry durability | M18 | Saved before email; outbox retry; the alert email carries no message body; rate limit keyed on both IP and email |
+| 8 | Media promotion | M17 | A staged object is not publicly reachable before publish; evidence stays private; a deleted media row with a live reference is refused |
+| 9 | Cache and revalidation | M14, M16, M20 | `no-store` on admin, preview and enquiry responses; preview `noindex`; publish queues a tag and the worker drains it |
+
 ## Phase A — Foundation
 
 ### M1. Skeleton (S)
