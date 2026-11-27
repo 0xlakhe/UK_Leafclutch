@@ -543,7 +543,8 @@ create_draft ──► draft ──submit──► in_review ──publish──
   from the live page until it is republished, and the other sections keep their
   pointers.
 - **Archive** is the normal delete: it unpublishes a live item and creates no draft.
-  Archiving the landing page archives its sections in the same transaction. **Restore**
+  Archiving the landing page also unpublishes a section that is still live when the page
+  itself is not, and archives its sections in the same transaction. **Restore**
   clears the flags, sections included, leaves the item `unpublished` or in the open draft
   that survived the archive, and does not republish; the next Edit continues or creates
   the draft, and no revalidation row is written.

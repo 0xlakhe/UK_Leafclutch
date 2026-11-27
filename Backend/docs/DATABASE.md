@@ -390,8 +390,10 @@ than a trigger on every insert.
 Deleting content in the admin has two paths. `archive_content` is the normal delete: it
 unpublishes the item, sets `archived_at` and `archived_by`, and keeps the versions for
 audit. The archive update is refused while a publication pointer still names the item;
-`archive_content` deletes the pointer first. `archived_by` is `on delete restrict`: staff
-are deactivated rather than deleted, and the archive record is audit evidence.
+`archive_content` deletes the pointer first. For a landing page it also unpublishes every
+section pointer, including when the page itself is not live. `archived_by` is
+`on delete restrict`: staff are deactivated rather than deleted, and the archive record
+is audit evidence.
 `restore_content` clears the flags; a restored item is not live until it is republished. `delete_content` permanently removes an item that was never published, has
 no approval or legal approval, is not one of the three fixed kinds that are never created
 from the UI (the landing page, its sections and settings) and is not referenced by a
@@ -492,8 +494,8 @@ transaction; the published versions remain for history. A page's revision on the
 the pointed version's `version_number`.
 
 The archive guard makes the pointer rule structural. `archive_content` unpublishes
-first, so the guard passes on the normal path, and a direct archive that left the item
-live is refused.
+first, so the guard passes on the normal path, which includes a landing page whose live
+sections outlive its own pointer, and a direct archive that left the item live is refused.
 
 ```sql
 create or replace function prevent_archived_with_publication()
@@ -3420,7 +3422,16 @@ begin
     raise exception 'item % is already archived', p_item_id;
   end if;
 
-  if exists (select 1 from content_publication where item_id = p_item_id) then
+  if exists (select 1 from content_publication where item_id = p_item_id)
+     or (
+       v_kind = 'landing_page'
+       and exists (
+         select 1
+         from page_section ps
+         join content_publication cp on cp.item_id = ps.item_id
+         where ps.page_id = p_item_id
+       )
+     ) then
     perform _unpublish_internal(p_item_id, p_actor, false);
   end if;
 
