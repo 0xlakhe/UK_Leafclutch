@@ -313,7 +313,8 @@ def commit_two_admins(engine: Engine) -> tuple[uuid.UUID, uuid.UUID]:
 def cleanup_committed_staff(engine: Engine, user_ids: list[uuid.UUID]) -> None:
     """Remove committed test rows; TRUNCATE is needed because the last Admin cannot be deleted."""
     with engine.begin() as cleanup:
-        cleanup.execute(sa.text("truncate table staff"))
+        # media.uploaded_by references staff, so PostgreSQL refuses a lone TRUNCATE.
+        cleanup.execute(sa.text("truncate table media, staff"))
         cleanup.execute(sa.delete(auth_users).where(auth_users.c.id.in_(user_ids)))
 
 

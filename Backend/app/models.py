@@ -1,8 +1,8 @@
 """SQLAlchemy models that define ``Base.metadata``.
 
-Only ``staff`` exists at this milestone; later revisions add their tables here. The tables
-are written as SQLAlchemy Core tables: no repository or ORM session reads them yet, and
-``alembic check`` compares metadata, which these definitions populate either way. An ORM
+``staff`` and ``media`` exist at this milestone; later revisions add their tables here. The
+tables are written as SQLAlchemy Core tables: no repository or ORM session reads them yet,
+and ``alembic check`` compares metadata, which these definitions populate either way. An ORM
 class arrives with the first repository that needs one.
 """
 
@@ -58,4 +58,102 @@ staff = sa.Table(
         name="staff_display_name_length",
     ),
     sa.Index("staff_active_role_idx", "role", postgresql_where=sa.text("active")),
+)
+
+# Created by revision 0001_extensions_enums, like the staff role.
+MEDIA_VISIBILITY = sa.Enum(
+    "public", "private", name="media_visibility", create_type=False
+)
+
+media = sa.Table(
+    "media",
+    Base.metadata,
+    sa.Column(
+        "id",
+        sa.Uuid(),
+        nullable=False,
+        server_default=sa.text("gen_random_uuid()"),
+    ),
+    sa.Column("visibility", MEDIA_VISIBILITY, nullable=False),
+    sa.Column("bucket", sa.Text(), nullable=False),
+    sa.Column("object_path", sa.Text(), nullable=False),
+    sa.Column("mime_type", sa.Text(), nullable=False),
+    sa.Column("size_bytes", sa.BigInteger(), nullable=False),
+    sa.Column("width", sa.Integer()),
+    sa.Column("height", sa.Integer()),
+    sa.Column("alt", sa.Text()),
+    sa.Column("checksum_sha256", sa.LargeBinary(), nullable=False),
+    sa.Column(
+        "uploaded_by",
+        sa.Uuid(),
+        sa.ForeignKey("staff.user_id", ondelete="RESTRICT"),
+        nullable=False,
+    ),
+    sa.Column(
+        "uploaded_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.text("now()"),
+    ),
+    sa.Column("promoted_at", sa.DateTime(timezone=True)),
+    sa.Column("deleted_at", sa.DateTime(timezone=True)),
+    sa.PrimaryKeyConstraint("id"),
+    sa.UniqueConstraint("bucket", "object_path", name="media_object_unique"),
+    sa.CheckConstraint(
+        "bucket in ('media-staging', 'site-media', 'evidence')",
+        name="media_bucket",
+    ),
+    sa.CheckConstraint(
+        "(visibility = 'public' and bucket = 'site-media') or\n"
+        "(visibility = 'private' and bucket in ('media-staging', 'evidence'))",
+        name="media_visibility_bucket",
+    ),
+    sa.CheckConstraint(
+        "(visibility = 'public') = (promoted_at is not null)",
+        name="media_promotion",
+    ),
+    sa.CheckConstraint(
+        "char_length(object_path) between 1 and 300 and object_path !~ '^/'",
+        name="media_object_path",
+    ),
+    sa.CheckConstraint(
+        "char_length(mime_type) between 1 and 100",
+        name="media_mime_length",
+    ),
+    sa.CheckConstraint(
+        "size_bytes > 0 and size_bytes <= 4194304",
+        name="media_size",
+    ),
+    sa.CheckConstraint(
+        "octet_length(checksum_sha256) = 32",
+        name="media_checksum",
+    ),
+    sa.CheckConstraint(
+        "alt is null or char_length(alt) <= 120",
+        name="media_alt_length",
+    ),
+    sa.CheckConstraint(
+        "bucket = 'evidence' or alt is not null",
+        name="media_alt_required",
+    ),
+    sa.CheckConstraint(
+        "(bucket = 'evidence'\n"
+        "  and mime_type in ('application/pdf', 'image/jpeg', 'image/png', "
+        "'image/webp'))\n"
+        "or (bucket <> 'evidence'\n"
+        "  and mime_type in ('image/jpeg', 'image/png', 'image/webp'))",
+        name="media_types",
+    ),
+    sa.CheckConstraint(
+        "width is null or width > 0",
+        name="media_width",
+    ),
+    sa.CheckConstraint(
+        "height is null or height > 0",
+        name="media_height",
+    ),
+    sa.CheckConstraint(
+        "mime_type not like 'image/%' or (width is not null and height is not null)",
+        name="media_image_dimensions",
+    ),
 )
