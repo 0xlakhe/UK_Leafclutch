@@ -2217,8 +2217,9 @@ The publish update itself is allowed: it changes a draft or in-review row to
 published. Any later update or delete sees `old.status = 'published'` and fails; the
 delete branch returns `old`, so a draft version can still be deleted and a published
 version cannot. This also refuses an item cascade that would remove a published version.
-A version belongs to the item that created it, so `content_version_item_frozen` freezes
-`item_id` for every status; a typed row cannot reach another item by moving its version.
+A version's `item_id` cannot change on update; the typed rows of a deleted version
+cascade, and a reinserted version on another item cannot gain a `section_version` because
+of the key guard.
 
 ```sql
 create or replace function assert_publication_version()

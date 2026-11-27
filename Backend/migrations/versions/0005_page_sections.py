@@ -11,8 +11,9 @@ commit if it forgets the row; it fires on a kind change too, so an item cannot b
 has versions. `assert_page_section_item_kept` holds the same invariant from the other side:
 a deferred check on `page_section` deletes. `assert_page_section_position` freezes the
 row's identity and order. `assert_section_version_key` makes a version's key match its
-`page_section` row and never change. `prevent_version_item_move` freezes a version's item
-for every status, so a typed row cannot reach another item by moving its version.
+`page_section` row and never change. `prevent_version_item_move` stops a version's item
+changing on update; the typed rows of a deleted version cascade, and a reinserted version
+on another item cannot gain a `section_version` because of the key guard.
 `assert_section_child` keeps each list on the section
 key that owns it, and `assert_section_version_item` keeps a reference on the record kind
 its section renders. The seven immutability triggers reuse

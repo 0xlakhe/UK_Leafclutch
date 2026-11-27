@@ -1019,7 +1019,12 @@ def test_a_page_section_item_created_and_deleted_in_one_transaction_passes(
     )
 
     db.execute(sa.delete(content_item).where(content_item.c.id == item_id))
-    db.execute(sa.text("set constraints content_item_page_section_row immediate"))
+    db.execute(
+        sa.text(
+            "set constraints content_item_page_section_row, "
+            "page_section_row_kept immediate"
+        )
+    )
 
     assert count_rows(db, content_item, content_item.c.id == item_id) == 0
     assert count_rows(db, page_section, page_section.c.item_id == item_id) == 0

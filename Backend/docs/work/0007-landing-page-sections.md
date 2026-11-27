@@ -597,6 +597,27 @@ tests/test_page_sections.py:1399: Failed: DID NOT RAISE DBAPIError
 Recreating the trigger made both new tests pass (`2 passed`). The scratch database was
 dropped.
 
+Real-commit evidence. The final recheck ran these against a real `BEGIN … COMMIT` on a
+scratch copy at `0005_page_sections`, and the orchestrator independently ran the validation
+harness:
+
+- delete a `hero` row and reinsert with a changed `page_id`, `section_key` or `sort_order`:
+  each failed at `COMMIT` with `page section item … changed its page_section row`; the old
+  `hero|0` row remained;
+- identical delete-and-reinsert committed, one row;
+- insert a section item plus its row, delete the item, commit: no error, zero rows;
+- two section items with rows, versions, section copies and a paragraph; delete the items,
+  then the landing page, commit: all rows gone;
+- a draft version moved to a project is refused with `a version cannot move between
+  items`; after rollback the version still belongs to the page-section item and its key is
+  unchanged, and a paragraph inserts;
+- the validation harness on a fresh `postgres:18`: 58 SQL blocks applied, block 57 skipped
+  for `cron.schedule`, 46 public tables, 18 PASS, exit 0, including the
+  archive-with-live-section phase.
+
+The suite itself still exercises deferred failures through `set constraints … immediate`
+and rolls back; these real-commit runs are recorded evidence, not suite tests.
+
 ## Review
 
 ## Docs updated
@@ -642,10 +663,9 @@ dropped.
 
 ## Not verified
 
-- The deferred trigger's failure at a real `COMMIT`. The test transaction is always rolled
-  back, so the test switches the constraint to immediate inside a savepoint, as the brief
-  directs; PostgreSQL's commit-time check rests on the documented semantics, not a
-  committed failure in this suite.
+- The suite itself does not commit: it still exercises deferred failures through
+  `set constraints … immediate` inside a transaction that rolls back. The real-commit
+  behaviour is covered by the recorded runs under Tests, not by a suite test.
 - `alembic downgrade base` was run only on the local development database; there is no
   staging or production database in this environment.
 - The part-2 guards were exercised through SQL only: no application code reads or writes
