@@ -1,0 +1,173 @@
+# Backend build plan
+
+Status: draft, for review. Written 27 November 2026.
+
+Scope: the FastAPI service in `Backend/` that serves the Leafclutch UK Phase 1 website
+and its admin panel. The frontend and admin UI are other folders with other contributors;
+this plan ends when the backend satisfies `docs/CONTRACT.md` and `docs/ADMIN.md` and is
+deployed.
+
+## How this plan works
+
+- One milestone is one task: one work file in this folder, one green commit (or a short
+  series), one independent review, one push. No milestone is "mostly done".
+- The schema milestones follow the 17 Alembic revisions in `docs/DATABASE.md` verbatim.
+  Their order is not arbitrary: triggers call functions created in the same or an earlier
+  revision.
+- Every schema milestone proves `upgrade` and `downgrade` on an empty database and leaves
+  `alembic check` clean.
+- A milestone that creates a table also creates its grants and RLS policy in the
+  milestone where `DATABASE.md` puts them, or records why it cannot yet.
+- Sizes are S (under half a day), M (one to two), L (three to five). They are rough.
+
+Note: `DATABASE.md` writes `cd api` in its command examples because it was written before
+the team folder layout. In this repository the path is `Backend`.
+
+## Phase A — Foundation
+
+### M1. Skeleton (S)
+
+Deliverables: `pyproject.toml` with Python 3.12, FastAPI, sync SQLAlchemy 2.0 + psycopg 3,
+Alembic, Pydantic; `app/config.py`, `app/db.py`, `app/main.py`, `app/health.py`;
+`migrations/`; `compose.yaml` with PostgreSQL 16; tests; README.
+
+Exit: `ruff`, `mypy`, `pytest` green; `/health` returns 200; `alembic current` runs.
+Blocked by: nothing.
+
+## Phase B — Schema
+
+Exit criteria are the same for all: upgrade and downgrade on a fresh database,
+`alembic check` clean, and the constraints tested by at least one failing insert.
+
+| Milestone | Revisions | Contents | Key exit check |
+| --- | --- | --- | --- |
+| M2. Extensions, enums, staff | 0001–0002 | Extensions, every enum, `staff`, last-Admin trigger, timestamp trigger | A second Admin removal is refused |
+| M3. Media | 0003 | `media`, immutability trigger | A published media row cannot be edited |
+| M4. Content spine | 0004 | `content_item`, `content_version`, `content_publication`, `content_seo`, immutability function | Editing a published version is refused |
+| M5. Landing page | 0005 | `page_section`, `section_version`, paragraphs, process stages, assurances, FAQs, next steps, `section_version_item` | The ten sections insert in PRD §5 order |
+| M6. Catalogue | 0006–0008 | Services and groups, projects and images and technologies, proof figures, testimonials, logos | Projections and unique service titles hold |
+| M7. Legal and settings | 0009–0010 | Legal page blocks, settings singleton with identity, hours, footer links | One settings row only; working-hour shape holds |
+| M8. Approvals | 0011 | `legal_approval`, `approval`, and their triggers | A legal page without a non-author approver cannot publish |
+| M9. Enquiries and delivery | 0012–0013 | `enquiry`, `enquiry_note`, `rate_limit_event`, `email_outbox`, `revalidation` | Status transitions and first-reply write-once hold |
+| M10. Audit | 0014 | `audit_log`, `sign_in_event`, append-only trigger, purge | An update to `audit_log` is refused |
+| M11. Publish engine | 0015 | Every function and view: draft, publish, page publish, unpublish, archive, restore, projections, approval gates, enquiry transitions, retention | A full draft → review → publish → unpublish cycle runs in SQL |
+| M12. Roles, RLS, storage | 0016 | `api_runner`, `scheduler_runner`, grants, RLS policies, buckets | `anon` and `authenticated` are denied; `api_runner` reads what it should; the anonymous-isolation test passes |
+| M13. Jobs | 0017 | `pg_cron` schedules | The schedules exist and an expiry run changes the expected rows |
+
+M11 and M12 are the hard ones. Budget for them; do not merge them into one milestone.
+
+## Phase C — API
+
+### M14. Public read API (M)
+
+The contract the frontend team consumes. Published-only endpoints from `CONTRACT.md`:
+the page payload, `/routes`, settings, FAQs, and `sitemap`/`robots` inputs.
+
+Exit: response bodies match `CONTRACT.md` field for field; a contract test fails when a
+field is renamed; drafts, users, enquiries, evidence and audit rows are unreachable
+anonymously; cache headers are correct.
+
+This is the milestone that unblocks the frontend and admin contributors. Ship it as early
+as the publish engine allows.
+
+### M15. Auth and staff (M)
+
+Supabase JWT verification, the staff row and role check on every protected request, MFA
+state, 12-hour idle handling per `ADMIN.md` §2 (decision A6), `/auth/me`, sign-in events,
+last-Admin protection.
+
+Exit: a signed-out, expired, MFA-less and downgraded role each get the documented status;
+a deactivated staff member is refused on the next request.
+
+### M16. Admin content API (L)
+
+List, detail, create draft, update draft, submit for review, publish, unpublish, archive,
+restore, version history, preview payload, approvals, legal pages. Each write maps to a
+`DATABASE.md` function, not hand-written SQL.
+
+Exit: every admin action in `ADMIN.md` §3 has an endpoint in `ADMIN.md` §4; publish
+refuses an unapproved project or a legal page without an approver.
+
+### M17. Media (M)
+
+Upload through the API, staging bucket, MIME/size/pixel limits, alt text, promotion at
+publish, replacement, soft delete, signed URLs for evidence.
+
+Exit: an upload cannot reach a public bucket before its content publishes; a deleted
+media row with a live reference is refused.
+
+### M18. Enquiries end to end (M)
+
+Validation, honeypot, Cloudflare Turnstile, durable rate limit, save before email, consent
+version, alert and confirmation through `email_outbox`, retry worker, admin list, notes,
+export, first-reply timestamp, deletion for an access request.
+
+Exit: a failed email never loses the enquiry; a repeated submission from the same key is
+rate-limited; the alert email contains no full message.
+
+### M19. Settings and site frame (S)
+
+Settings draft and publish, legal identity, hours, footer links, logo, `nepal_site_url`.
+Booking fields stay unpublished. The publish gate for the legal identity applies.
+
+Exit: the public settings endpoint reflects only the published version; a missing VAT
+number omits the line rather than seeding one.
+
+### M20. Audit and operations (S)
+
+Audit list, sign-in list, readiness endpoint, structured logging, error envelope, CORS,
+retention job wiring, `/openapi.json` review.
+
+Exit: every admin write produces an audit row; no log line contains a token, password or
+enquiry message; readiness reports the migration revision.
+
+## Phase D — Hardening and delivery
+
+### M21. Contract and security tests (M)
+
+The test matrix in `ADMIN.md` §13 plus the anonymous-isolation and publish-gate tests from
+`DATABASE.md`. Run them against a real PostgreSQL with the real roles.
+
+Exit: the suite proves the Musts, not the implementation.
+
+### M22. Deployment (M)
+
+Staging first: Supabase project in `eu-west-2`, migrations, seed, storage buckets, the API
+host, environment variables, smoke tests. Production after staging passes, with the same
+migrations and a backup.
+
+Exit: staging serves `/health`, `/openapi.json` and the public page; a publish updates the
+live page within a minute once the frontend is connected.
+
+## Decision gates
+
+These stop a milestone rather than being guessed:
+
+| Decision | Blocks |
+| --- | --- |
+| D-7 legal identity values | Real settings content and the legal pages; not the schema |
+| D-8 retention and lawful basis | Retention functions and the privacy notice; proposed values are implemented but must be confirmed |
+| D-1 host and region | Deployment |
+| Hreflang locale codes | Any value in `nepal_site_url`'s companion metadata; the column stays |
+| Supabase project and keys per environment | M12 storage policies, M22 |
+| Email provider and sender domain | M18 |
+
+## Risks
+
+- **M11/M12 are where the project is won or lost.** Publish functions and RLS are the two
+  places a mistake is expensive and quiet. Review them with the database open, not from
+  the diff alone.
+- **The frontend is blocked on M14.** If the team needs the API sooner, publish the
+  OpenAPI schema with fixture responses behind a flag, clearly marked as not
+  implementation.
+- **`DATABASE.md` is 200 KB.** Read the section for the milestone, never the whole file,
+  and cite what you used in the work file.
+- **Scope creep into Frontend/Admin.** The pre-push guard exists for this reason.
+
+## Definition of done for the project
+
+- Every endpoint in `CONTRACT.md` and `ADMIN.md` exists and is covered by a contract test.
+- The anonymous surface exposes only published content.
+- Migrations run from empty to head and back.
+- Staging is deployed and seeded; the README's commands work from a clean clone.
+- The work log has one closed entry per milestone, each with its review outcome.
