@@ -623,20 +623,83 @@ begin
   ) then
     raise exception 'page section item % needs a page_section row', new.id;
   end if;
+
+  if tg_op = 'UPDATE'
+     and old.kind = 'page_section'
+     and new.kind <> 'page_section'
+     and exists (
+       select 1
+       from content_version cv
+       join section_version sv on sv.version_id = cv.id
+       where cv.item_id = new.id
+     ) then
+    raise exception 'a section item with versions cannot change kind';
+  end if;
+
   return null;
 end;
 $$;
 
 create constraint trigger content_item_page_section_row
-  after insert on content_item
+  after insert or update of kind on content_item
   deferrable initially deferred
   for each row execute function assert_page_section_row();
+
+create or replace function assert_page_section_item_kept()
+returns trigger
+language plpgsql
+as $$
+begin
+  if exists (
+       select 1 from content_item where id = old.item_id and kind = 'page_section'
+     )
+     and not exists (
+       select 1 from page_section where item_id = old.item_id
+     ) then
+    raise exception 'page section item % lost its page_section row', old.item_id;
+  end if;
+  return null;
+end;
+$$;
+
+create constraint trigger page_section_row_kept
+  after delete on page_section
+  deferrable initially deferred
+  for each row execute function assert_page_section_item_kept();
+
+create or replace function assert_page_section_position()
+returns trigger
+language plpgsql
+as $$
+begin
+  if new.item_id is distinct from old.item_id
+     or new.page_id is distinct from old.page_id
+     or new.section_key is distinct from old.section_key
+     or new.sort_order is distinct from old.sort_order then
+    raise exception 'page_section identity and position cannot change';
+  end if;
+  return new;
+end;
+$$;
+
+create trigger page_section_immutable
+  before update on page_section
+  for each row execute function assert_page_section_position();
 ```
 
 The API inserts the item and its `page_section` row in one transaction; the deferred
-constraint trigger fails the commit if it forgets the row. `section_key` is an enum, so
-a typo cannot invent a section. The unique pair on `(page_id, sort_order)` means two
-sections cannot trade the same place.
+constraint trigger fails the commit if it forgets the row, and it fires again on a kind
+change, so an item cannot become a `page_section` without one. The invariant is two-sided:
+`page_section_row_kept` is also deferred to the commit, and it fails when a deleted row's
+item is still a `page_section` and no replacement row exists, so a direct delete and a
+landing-page cascade that would orphan its sections are refused, while a
+delete-and-reinsert in one transaction passes. An item that already has versions cannot
+leave the `page_section` kind at all, even after its row is deleted, because those versions
+would be left without a section. `assert_page_section_position` freezes the four identity
+and position columns: moving a row to another item or page, or changing its key or order,
+is refused, while a no-op update passes. `kind` and `page_kind` are held by their checks.
+`section_key` is an enum, so a typo cannot invent a section. The unique pair on
+`(page_id, sort_order)` means two sections cannot trade the same place.
 
 `page_section.sort_order` holds the PRD's section `order`. PRD §5 fixes the order at
 launch, and §8's permissions table gives page sections no reorder control, so the admin
@@ -715,7 +778,54 @@ create table section_version (
     and (cta_href is null or char_length(cta_href) <= 200)
   )
 );
+
+create or replace function assert_section_version_key()
+returns trigger
+language plpgsql
+as $$
+declare
+  v_kind content_kind;
+  v_key page_section_key;
+begin
+  if tg_op = 'UPDATE' and new.section_key <> old.section_key then
+    raise exception 'section version key cannot change';
+  end if;
+
+  select ci.kind, ps.section_key
+    into v_kind, v_key
+  from content_version cv
+  join content_item ci on ci.id = cv.item_id
+  left join page_section ps on ps.item_id = cv.item_id
+  where cv.id = new.version_id;
+
+  if v_kind is null or v_kind <> 'page_section' then
+    raise exception 'section version belongs to a page section';
+  end if;
+
+  if v_key is null then
+    raise exception 'section item has no page_section row';
+  end if;
+
+  if v_key <> new.section_key then
+    raise exception 'section version key % does not match its section %',
+      new.section_key, v_key;
+  end if;
+
+  return new;
+end;
+$$;
+
+create trigger section_version_key_guard
+  before insert or update of section_key on section_version
+  for each row execute function assert_section_version_key();
 ```
+
+`section_key` is duplicated from the owning `page_section` row, so it is checked, not
+trusted: a version may exist only for a `page_section` item, its key must equal the row's
+key, and the key cannot change after insert. The row's key is frozen by
+`page_section_immutable` and every draft copies its key from the live version, so the copy
+still matches. With that guard in place, `assert_section_child` reads the version key
+alone: a version that exists has a section and a key that matches it.
 
 The key edges:
 
@@ -4680,7 +4790,7 @@ Alembic is the source of truth. The SQL above is split into these revisions:
 | `0002_staff`            | `staff`, last-Admin statement and row triggers, timestamp trigger                                                                                                                                                           | Drop table and functions             |
 | `0003_media`            | `media`, media immutability trigger                                                                                                                                                                      | Drop table and trigger               |
 | `0004_content_core`     | `content_item`, `content_version`, `content_publication`, `content_seo`, their six indexes, and the version, publication, archive and content-immutability functions and triggers                                                                                                             | Drop tables and functions            |
-| `0005_page_sections`    | `page_section`, `section_version`, `section_paragraph`, the four section child tables and their triggers, `section_version_item`                                                                        | Drop tables and triggers             |
+| `0005_page_sections`    | `page_section`, `section_version`, the five section child tables, `section_version_item`, and the page-section, section-key and immutability triggers                                                                        | Drop tables and triggers             |
 | `0006_services`         | `service_group`, `service_group_version`, `service_version`, `service`, their triggers and indexes                                                                                                 | Drop tables and triggers             |
 | `0007_projects`         | `project_version`, `project_image`, `project_technology`, `project`, their triggers and indexes                                                                                                                            | Drop tables and triggers             |
 | `0008_proof`            | `proof_figure_version`, `testimonial_version`, `client_logo_version`, their triggers                                                                                                                 | Drop tables and triggers             |

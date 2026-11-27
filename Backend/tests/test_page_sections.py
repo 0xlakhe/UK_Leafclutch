@@ -45,6 +45,12 @@ REFERENCE_MOVE = "a section reference cannot move between versions or items"
 REFERENCE_NOT_SECTION = "references belong to a page section version"
 PUBLISHED_SECTION = "published section version is immutable"
 SECTION_ITEM_MISSING = "section item has no page_section row"
+PAGE_SECTION_LOST = "page section item .* lost its page_section row"
+PAGE_SECTION_POSITION = "page_section identity and position cannot change"
+SECTION_VERSION_KEY_MOVED = "section version key cannot change"
+SECTION_VERSION_WRONG_ITEM = "section version belongs to a page section"
+SECTION_VERSION_KEY_MISMATCH = "section version key .* does not match its section .*"
+SECTION_ITEM_WITH_VERSIONS = "a section item with versions cannot change kind"
 
 # The ten keys in the order PRD §5 lists them. This is the landing page's reading order.
 PRD_SECTIONS = [
@@ -385,7 +391,7 @@ EXPECTED_TRIGGERS: dict[str, tuple[str, bool, bool, bool, bool, bool, bool, bool
         False,
         True,
         False,
-        False,
+        True,
         True,
         True,
     ),
@@ -408,6 +414,26 @@ EXPECTED_TRIGGERS: dict[str, tuple[str, bool, bool, bool, bool, bool, bool, bool
         True,
         False,
         False,
+    ),
+    "page_section_immutable": (
+        "page_section",
+        True,
+        True,
+        False,
+        False,
+        True,
+        False,
+        False,
+    ),
+    "page_section_row_kept": (
+        "page_section",
+        True,
+        False,
+        False,
+        True,
+        False,
+        True,
+        True,
     ),
     "process_assurance_immutable": (
         "process_assurance",
@@ -499,6 +525,16 @@ EXPECTED_TRIGGERS: dict[str, tuple[str, bool, bool, bool, bool, bool, bool, bool
         False,
         False,
     ),
+    "section_version_key_guard": (
+        "section_version",
+        True,
+        True,
+        True,
+        False,
+        True,
+        False,
+        False,
+    ),
 }
 
 # Every section key with a row that uses only the columns its key allows. About also needs
@@ -566,8 +602,8 @@ def normalise(definition: str) -> str:
 
 
 def normalise_constraint(definition: str) -> str:
-    """Lower-case, drop PostgreSQL's decorative parentheses and collapse whitespace."""
-    return " ".join(definition.lower().replace("(", "").replace(")", "").split())
+    """Lower-case and collapse whitespace; PostgreSQL's parentheses are part of the pin."""
+    return " ".join(definition.lower().split())
 
 
 def add_staff(db: Connection) -> uuid.UUID:
@@ -919,16 +955,35 @@ def test_a_section_page_must_be_a_landing_page(db: Connection) -> None:
             )
 
 
-def test_deleting_the_landing_page_cascades_its_section_rows(db: Connection) -> None:
+def test_deleting_a_landing_page_with_sections_is_refused(db: Connection) -> None:
     editor = add_staff(db)
     page_id = add_page(db, editor)
     add_section(db, editor, "hero", 0, page_id)
     add_section(db, editor, "proof", 1, page_id)
+
+    with pytest.raises(DBAPIError, match=PAGE_SECTION_LOST):
+        with db.begin_nested():
+            db.execute(sa.delete(content_item).where(content_item.c.id == page_id))
+            db.execute(sa.text("set constraints page_section_row_kept immediate"))
+
+    assert count_rows(db, content_item, content_item.c.id == page_id) == 1
     assert count_rows(db, page_section, page_section.c.page_id == page_id) == 2
 
-    db.execute(sa.delete(content_item).where(content_item.c.id == page_id))
 
+def test_deleting_the_sections_then_the_landing_page_succeeds(db: Connection) -> None:
+    editor = add_staff(db)
+    page_id = add_page(db, editor)
+    _, hero_id = add_section(db, editor, "hero", 0, page_id)
+    _, proof_id = add_section(db, editor, "proof", 1, page_id)
+
+    for item_id in (hero_id, proof_id):
+        db.execute(sa.delete(content_item).where(content_item.c.id == item_id))
     assert count_rows(db, page_section, page_section.c.page_id == page_id) == 0
+
+    db.execute(sa.delete(content_item).where(content_item.c.id == page_id))
+    db.execute(sa.text("set constraints page_section_row_kept immediate"))
+
+    assert count_rows(db, content_item, content_item.c.id == page_id) == 0
 
 
 def test_deleting_a_section_item_cascades_its_row(db: Connection) -> None:
@@ -936,9 +991,111 @@ def test_deleting_a_section_item_cascades_its_row(db: Connection) -> None:
     page_id, item_id = add_section(db, editor)
 
     db.execute(sa.delete(content_item).where(content_item.c.id == item_id))
+    db.execute(sa.text("set constraints page_section_row_kept immediate"))
 
     assert count_rows(db, page_section, page_section.c.item_id == item_id) == 0
     assert count_rows(db, page_section, page_section.c.page_id == page_id) == 0
+
+
+def test_a_live_page_section_row_cannot_be_deleted(db: Connection) -> None:
+    editor = add_staff(db)
+    _, item_id = add_section(db, editor)
+
+    with pytest.raises(DBAPIError, match=PAGE_SECTION_LOST):
+        with db.begin_nested():
+            db.execute(sa.delete(page_section).where(page_section.c.item_id == item_id))
+            db.execute(sa.text("set constraints page_section_row_kept immediate"))
+
+    assert count_rows(db, page_section, page_section.c.item_id == item_id) == 1
+
+
+def test_a_page_section_row_can_be_deleted_and_recreated_in_one_transaction(
+    db: Connection,
+) -> None:
+    editor = add_staff(db)
+    page_id, item_id = add_section(db, editor)
+
+    db.execute(sa.delete(page_section).where(page_section.c.item_id == item_id))
+    db.execute(
+        sa.insert(page_section).values(
+            item_id=item_id,
+            page_id=page_id,
+            section_key="hero",
+            sort_order=0,
+        )
+    )
+    db.execute(sa.text("set constraints page_section_row_kept immediate"))
+
+    assert count_rows(db, page_section, page_section.c.item_id == item_id) == 1
+
+
+def test_an_item_cannot_become_a_page_section_without_a_row(db: Connection) -> None:
+    editor = add_staff(db)
+    item_id = add_item(db, editor, kind="service_group")
+
+    with pytest.raises(DBAPIError, match=PAGE_SECTION_NEEDS_ROW):
+        with db.begin_nested():
+            db.execute(
+                sa.update(content_item)
+                .where(content_item.c.id == item_id)
+                .values(kind="page_section")
+            )
+            db.execute(
+                sa.text("set constraints content_item_page_section_row immediate")
+            )
+
+    assert (
+        db.execute(
+            sa.select(content_item.c.kind).where(content_item.c.id == item_id)
+        ).scalar_one()
+        == "service_group"
+    )
+
+
+@pytest.mark.parametrize("column", ["item_id", "page_id", "section_key", "sort_order"])
+def test_a_page_section_identity_or_position_cannot_change(
+    db: Connection, column: str
+) -> None:
+    editor = add_staff(db)
+    page_id, item_id = add_section(db, editor, "hero", 0)
+    replacements: dict[str, object] = {
+        "item_id": add_item(db, editor, kind="page_section"),
+        "page_id": add_page(db, editor),
+        "section_key": "proof",
+        "sort_order": 1,
+    }
+
+    with pytest.raises(DBAPIError, match=PAGE_SECTION_POSITION):
+        with db.begin_nested():
+            db.execute(
+                sa.update(page_section)
+                .where(page_section.c.item_id == item_id)
+                .values(**{column: replacements[column]})
+            )
+
+    stored = db.execute(
+        sa.select(page_section.c[column]).where(page_section.c.item_id == item_id)
+    ).scalar_one()
+    original: dict[str, object] = {
+        "item_id": item_id,
+        "page_id": page_id,
+        "section_key": "hero",
+        "sort_order": 0,
+    }
+    assert stored == original[column]
+
+
+def test_a_no_op_page_section_update_is_allowed(db: Connection) -> None:
+    editor = add_staff(db)
+    _, item_id = add_section(db, editor, "hero", 0)
+
+    result = db.execute(
+        sa.update(page_section)
+        .where(page_section.c.item_id == item_id)
+        .values(section_key="hero", sort_order=0)
+    )
+
+    assert result.rowcount == 1
 
 
 @pytest.mark.parametrize(
@@ -979,6 +1136,11 @@ def test_each_section_key_accepts_its_columns(
             {"primary_label": "Start", "primary_href": "/contact"},
             "section_version_hero_ctas",
         ),
+        (
+            "about",
+            {"primary_label": "Start", "primary_href": "/contact"},
+            "section_version_hero_ctas",
+        ),
         ("hero", {"cta_label": "Talk", "cta_href": "/contact"}, "section_version_cta_key"),
         ("services", {"privacy_text": "Privacy"}, "section_version_privacy_key"),
         ("services", {"image_id": "media"}, "section_version_image_key"),
@@ -1003,6 +1165,7 @@ def test_each_section_key_accepts_its_columns(
         "nav-off-its-keys",
         "eyebrow-off-hero",
         "hero-ctas-off-hero",
+        "about-ctas-off-about",
         "cta-off-not-sure",
         "privacy-off-contact",
         "image-off-about",
@@ -1096,6 +1259,104 @@ def test_a_published_section_version_is_frozen(db: Connection) -> None:
             )
 
     assert select_section_version(db, version_id).heading == "Before"
+
+
+def test_a_section_version_key_must_match_its_section(db: Connection) -> None:
+    editor = add_staff(db)
+    _, item_id = add_section(db, editor, "hero")
+    version_id = add_version(db, item_id, editor)
+
+    with pytest.raises(DBAPIError, match=SECTION_VERSION_KEY_MISMATCH):
+        with db.begin_nested():
+            db.execute(
+                sa.insert(section_version).values(
+                    version_id=version_id, section_key="contact"
+                )
+            )
+
+
+def test_a_section_version_needs_its_page_section_row(db: Connection) -> None:
+    editor = add_staff(db)
+    item_id = add_item(db, editor, kind="page_section")
+    version_id = add_version(db, item_id, editor)
+
+    with pytest.raises(DBAPIError, match=SECTION_ITEM_MISSING):
+        with db.begin_nested():
+            db.execute(
+                sa.insert(section_version).values(
+                    version_id=version_id, section_key="hero"
+                )
+            )
+
+
+def test_a_project_version_cannot_gain_a_section_version(db: Connection) -> None:
+    editor = add_staff(db)
+    project_id = add_item(db, editor, kind="project", slug=f"project-{uuid.uuid4()}")
+    version_id = add_version(db, project_id, editor)
+
+    with pytest.raises(DBAPIError, match=SECTION_VERSION_WRONG_ITEM):
+        with db.begin_nested():
+            db.execute(
+                sa.insert(section_version).values(
+                    version_id=version_id, section_key="hero"
+                )
+            )
+
+
+def test_a_section_version_key_cannot_change(db: Connection) -> None:
+    editor = add_staff(db)
+    version_id = add_section_version(db, editor, "hero")
+
+    with pytest.raises(DBAPIError, match=SECTION_VERSION_KEY_MOVED):
+        with db.begin_nested():
+            db.execute(
+                sa.update(section_version)
+                .where(section_version.c.version_id == version_id)
+                .values(section_key="contact")
+            )
+
+    assert select_section_version(db, version_id).section_key == "hero"
+
+
+def test_a_section_item_with_versions_cannot_change_kind(db: Connection) -> None:
+    editor = add_staff(db)
+    _, item_id = add_section(db, editor, "hero")
+    # Consume the insert event while the page row exists, so the case reaches the update.
+    db.execute(sa.text("set constraints content_item_page_section_row immediate"))
+    version_id = add_version(db, item_id, editor)
+    db.execute(
+        sa.insert(section_version).values(version_id=version_id, section_key="hero")
+    )
+    db.execute(sa.delete(page_section).where(page_section.c.item_id == item_id))
+
+    with pytest.raises(DBAPIError, match=SECTION_ITEM_WITH_VERSIONS):
+        with db.begin_nested():
+            db.execute(
+                sa.update(content_item)
+                .where(content_item.c.id == item_id)
+                .values(kind="service_group")
+            )
+
+
+def test_a_section_item_without_versions_can_change_kind(db: Connection) -> None:
+    editor = add_staff(db)
+    _, item_id = add_section(db, editor, "hero")
+    db.execute(sa.text("set constraints content_item_page_section_row immediate"))
+    db.execute(sa.delete(page_section).where(page_section.c.item_id == item_id))
+
+    db.execute(
+        sa.update(content_item)
+        .where(content_item.c.id == item_id)
+        .values(kind="service_group")
+    )
+    db.execute(sa.text("set constraints all immediate"))
+
+    assert (
+        db.execute(
+            sa.select(content_item.c.kind).where(content_item.c.id == item_id)
+        ).scalar_one()
+        == "service_group"
+    )
 
 
 def test_deleting_a_draft_content_version_cascades_its_section_version(
@@ -1304,11 +1565,14 @@ def test_a_reference_must_belong_to_a_page_section_version(db: Connection) -> No
 
 def test_a_section_item_without_its_row_cannot_take_references(db: Connection) -> None:
     editor = add_staff(db)
-    item_id = add_item(db, editor, kind="page_section")
+    _, item_id = add_section(db, editor, "services")
     version_id = add_version(db, item_id, editor)
     db.execute(
         sa.insert(section_version).values(version_id=version_id, section_key="services")
     )
+    # The section_version cannot exist without the row, so the row goes afterwards; the
+    # reference guard still has to refuse a version whose page_section row has vanished.
+    db.execute(sa.delete(page_section).where(page_section.c.item_id == item_id))
     group_id = add_record_item(db, editor, "service_group")
 
     with pytest.raises(DBAPIError, match=SECTION_ITEM_MISSING):
@@ -1563,12 +1827,47 @@ def test_the_installed_triggers_fire_on_the_documented_events(db: Connection) ->
                 "'contact_next_step_section', 'section_version_item_assert', "
                 "'section_paragraph_immutable', 'process_stage_immutable', "
                 "'process_assurance_immutable', 'faq_item_immutable', "
-                "'contact_next_step_immutable', 'section_version_item_immutable')"
+                "'contact_next_step_immutable', 'section_version_item_immutable', "
+                "'page_section_row_kept', 'page_section_immutable', "
+                "'section_version_key_guard')"
             )
         ).all()
     }
 
     assert installed == EXPECTED_TRIGGERS
+
+
+def test_the_column_scoped_triggers_watch_the_documented_columns(db: Connection) -> None:
+    watched = {
+        name: columns
+        for name, columns in db.execute(
+            sa.text(
+                "select t.tgname, coalesce(("
+                "select string_agg(a.attname, ',' order by a.attnum) "
+                "from pg_attribute a "
+                "where a.attrelid = t.tgrelid "
+                "and a.attnum = any (t.tgattr::int2[])), '') "
+                "from pg_trigger t where not t.tgisinternal and t.tgname in "
+                "('content_item_page_section_row', 'section_version_immutable', "
+                "'section_paragraph_section', 'process_stage_section', "
+                "'process_assurance_section', 'faq_item_section', "
+                "'contact_next_step_section', 'section_version_item_assert', "
+                "'section_paragraph_immutable', 'process_stage_immutable', "
+                "'process_assurance_immutable', 'faq_item_immutable', "
+                "'contact_next_step_immutable', 'section_version_item_immutable', "
+                "'page_section_row_kept', 'page_section_immutable', "
+                "'section_version_key_guard')"
+            )
+        ).all()
+    }
+
+    assert watched == {
+        name: {
+            "content_item_page_section_row": "kind",
+            "section_version_key_guard": "section_key",
+        }.get(name, "")
+        for name in EXPECTED_TRIGGERS
+    }
 
 
 def test_the_installed_assert_page_section_row_pins_its_message(db: Connection) -> None:
@@ -1582,6 +1881,11 @@ def test_the_installed_assert_page_section_row_pins_its_message(db: Connection) 
         "if new.kind = 'page_section' and not exists",
         "select 1 from page_section where item_id = new.id",
         "raise exception 'page section item % needs a page_section row', new.id",
+        "if tg_op = 'update'",
+        "and old.kind = 'page_section'",
+        "and new.kind <> 'page_section'",
+        "join section_version sv on sv.version_id = cv.id",
+        "raise exception 'a section item with versions cannot change kind'",
         "return null",
     ]:
         assert fragment in normalised, (
@@ -1600,6 +1904,46 @@ def test_the_installed_assert_page_section_row_pins_its_message(db: Connection) 
                 "where version_id = new.version_id",
                 "if v_key is null or v_key::text <> tg_argv[0] then",
                 "raise exception 'row belongs to section %, not %', v_key, tg_argv[0]",
+                "return new",
+            ],
+        ),
+        (
+            "assert_page_section_item_kept()",
+            [
+                "if exists (",
+                "select 1 from content_item where id = old.item_id "
+                "and kind = 'page_section'",
+                "and not exists (",
+                "select 1 from page_section where item_id = old.item_id",
+                "raise exception 'page section item % lost its page_section row', "
+                "old.item_id",
+                "return null",
+            ],
+        ),
+        (
+            "assert_page_section_position()",
+            [
+                "if new.item_id is distinct from old.item_id",
+                "or new.page_id is distinct from old.page_id",
+                "or new.section_key is distinct from old.section_key",
+                "or new.sort_order is distinct from old.sort_order then",
+                "raise exception 'page_section identity and position cannot change'",
+                "return new",
+            ],
+        ),
+        (
+            "assert_section_version_key()",
+            [
+                "if tg_op = 'update' and new.section_key <> old.section_key then",
+                "raise exception 'section version key cannot change'",
+                "select ci.kind, ps.section_key",
+                "left join page_section ps on ps.item_id = cv.item_id",
+                "if v_kind is null or v_kind <> 'page_section' then",
+                "raise exception 'section version belongs to a page section'",
+                "raise exception 'section item has no page_section row'",
+                "if v_key <> new.section_key then",
+                "raise exception 'section version key % does not match its section %',",
+                "new.section_key, v_key",
                 "return new",
             ],
         ),
@@ -1627,7 +1971,13 @@ def test_the_installed_assert_page_section_row_pins_its_message(db: Connection) 
             ],
         ),
     ],
-    ids=["assert_section_child", "assert_section_version_item"],
+    ids=[
+        "assert_section_child",
+        "assert_page_section_item_kept",
+        "assert_page_section_position",
+        "assert_section_version_key",
+        "assert_section_version_item",
+    ],
 )
 def test_the_installed_section_functions_pin_their_bodies(
     db: Connection, function: str, fragments: list[str]

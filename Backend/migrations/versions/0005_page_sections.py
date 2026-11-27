@@ -6,10 +6,15 @@ The guards are copied from Backend/docs/DATABASE.md §Section items, §Lists ins
 section, §Section references, §Child references and §Publication and immutability.
 `assert_page_section_row` is attached as a deferrable constraint trigger: the API inserts a
 section's item and its page_section row in one transaction, and the trigger fails the
-commit if it forgets the row. `assert_section_child` keeps each list on the section key
-that owns it, and `assert_section_version_item` keeps a reference on the record kind its
-section renders. The seven immutability triggers reuse `prevent_published_content_mutation`
-from 0004; the function is not recreated here.
+commit if it forgets the row; it fires on a kind change too, so an item cannot become a
+`page_section` without one, and it refuses to drop the kind of a section item that still
+has versions. `assert_page_section_item_kept` holds the same invariant from the other side:
+a deferred check on `page_section` deletes. `assert_page_section_position` freezes the
+row's identity and order. `assert_section_version_key` makes a version's key match its
+`page_section` row and never change. `assert_section_child` keeps each list on the section
+key that owns it, and `assert_section_version_item` keeps a reference on the record kind
+its section renders. The seven immutability triggers reuse
+`prevent_published_content_mutation` from 0004; the function is not recreated here.
 
 Revision ID: 0005_page_sections
 Revises: 0004_content_core
@@ -70,6 +75,19 @@ begin
   ) then
     raise exception 'page section item % needs a page_section row', new.id;
   end if;
+
+  if tg_op = 'UPDATE'
+     and old.kind = 'page_section'
+     and new.kind <> 'page_section'
+     and exists (
+       select 1
+       from content_version cv
+       join section_version sv on sv.version_id = cv.id
+       where cv.item_id = new.id
+     ) then
+    raise exception 'a section item with versions cannot change kind';
+  end if;
+
   return null;
 end;
 $$;
@@ -77,9 +95,102 @@ $$;
 
 CONTENT_ITEM_PAGE_SECTION_ROW_TRIGGER_SQL = """
 create constraint trigger content_item_page_section_row
-  after insert on content_item
+  after insert or update of kind on content_item
   deferrable initially deferred
   for each row execute function assert_page_section_row();
+"""
+
+ASSERT_PAGE_SECTION_ITEM_KEPT_SQL = """
+create or replace function assert_page_section_item_kept()
+returns trigger
+language plpgsql
+as $$
+begin
+  if exists (
+       select 1 from content_item where id = old.item_id and kind = 'page_section'
+     )
+     and not exists (
+       select 1 from page_section where item_id = old.item_id
+     ) then
+    raise exception 'page section item % lost its page_section row', old.item_id;
+  end if;
+  return null;
+end;
+$$;
+"""
+
+PAGE_SECTION_ROW_KEPT_TRIGGER_SQL = """
+create constraint trigger page_section_row_kept
+  after delete on page_section
+  deferrable initially deferred
+  for each row execute function assert_page_section_item_kept();
+"""
+
+ASSERT_PAGE_SECTION_POSITION_SQL = """
+create or replace function assert_page_section_position()
+returns trigger
+language plpgsql
+as $$
+begin
+  if new.item_id is distinct from old.item_id
+     or new.page_id is distinct from old.page_id
+     or new.section_key is distinct from old.section_key
+     or new.sort_order is distinct from old.sort_order then
+    raise exception 'page_section identity and position cannot change';
+  end if;
+  return new;
+end;
+$$;
+"""
+
+PAGE_SECTION_IMMUTABLE_TRIGGER_SQL = """
+create trigger page_section_immutable
+  before update on page_section
+  for each row execute function assert_page_section_position();
+"""
+
+ASSERT_SECTION_VERSION_KEY_SQL = """
+create or replace function assert_section_version_key()
+returns trigger
+language plpgsql
+as $$
+declare
+  v_kind content_kind;
+  v_key page_section_key;
+begin
+  if tg_op = 'UPDATE' and new.section_key <> old.section_key then
+    raise exception 'section version key cannot change';
+  end if;
+
+  select ci.kind, ps.section_key
+    into v_kind, v_key
+  from content_version cv
+  join content_item ci on ci.id = cv.item_id
+  left join page_section ps on ps.item_id = cv.item_id
+  where cv.id = new.version_id;
+
+  if v_kind is null or v_kind <> 'page_section' then
+    raise exception 'section version belongs to a page section';
+  end if;
+
+  if v_key is null then
+    raise exception 'section item has no page_section row';
+  end if;
+
+  if v_key <> new.section_key then
+    raise exception 'section version key % does not match its section %',
+      new.section_key, v_key;
+  end if;
+
+  return new;
+end;
+$$;
+"""
+
+SECTION_VERSION_KEY_GUARD_TRIGGER_SQL = """
+create trigger section_version_key_guard
+  before insert or update of section_key on section_version
+  for each row execute function assert_section_version_key();
 """
 
 SECTION_VERSION_IMMUTABLE_TRIGGER_SQL = """
@@ -503,6 +614,12 @@ def upgrade() -> None:
 
     op.execute(ASSERT_PAGE_SECTION_ROW_SQL)
     op.execute(CONTENT_ITEM_PAGE_SECTION_ROW_TRIGGER_SQL)
+    op.execute(ASSERT_PAGE_SECTION_ITEM_KEPT_SQL)
+    op.execute(PAGE_SECTION_ROW_KEPT_TRIGGER_SQL)
+    op.execute(ASSERT_PAGE_SECTION_POSITION_SQL)
+    op.execute(PAGE_SECTION_IMMUTABLE_TRIGGER_SQL)
+    op.execute(ASSERT_SECTION_VERSION_KEY_SQL)
+    op.execute(SECTION_VERSION_KEY_GUARD_TRIGGER_SQL)
     op.execute(SECTION_VERSION_IMMUTABLE_TRIGGER_SQL)
     op.execute(ASSERT_SECTION_CHILD_SQL)
     op.execute(SECTION_CHILD_TRIGGERS_SQL)
@@ -516,6 +633,12 @@ def downgrade() -> None:
     # its trigger and before the table it reads; `prevent_published_content_mutation`
     # belongs to 0004 and stays. The child guards go before their functions, and the
     # children before `section_version`, which they read.
+    op.execute("drop trigger page_section_row_kept on page_section")
+    op.execute("drop trigger page_section_immutable on page_section")
+    op.execute("drop trigger section_version_key_guard on section_version")
+    op.execute("drop function assert_page_section_item_kept()")
+    op.execute("drop function assert_page_section_position()")
+    op.execute("drop function assert_section_version_key()")
     op.execute("drop trigger section_version_item_immutable on section_version_item")
     op.execute("drop trigger contact_next_step_immutable on contact_next_step")
     op.execute("drop trigger faq_item_immutable on faq_item")

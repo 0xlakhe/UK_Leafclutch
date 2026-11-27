@@ -225,15 +225,15 @@ EXPECTED_TRIGGERS: dict[str, tuple[str, bool, bool, bool, bool, bool]] = {
         False,
         True,
     ),
-    # Installed by 0005_page_sections; its deferrable flags are pinned in
-    # tests/test_page_sections.py.
+    # Installed by 0005_page_sections; its deferrable flags and its update-of-kind
+    # column are pinned in tests/test_page_sections.py.
     "content_item_page_section_row": (
         "content_item",
         True,
         False,
         True,
         False,
-        False,
+        True,
     ),
     "content_version_bump_next": (
         "content_version",
@@ -284,8 +284,8 @@ def normalise(definition: str) -> str:
 
 
 def normalise_constraint(definition: str) -> str:
-    """Lower-case, drop PostgreSQL's decorative parentheses and collapse whitespace."""
-    return " ".join(definition.lower().replace("(", "").replace(")", "").split())
+    """Lower-case and collapse whitespace; PostgreSQL's parentheses are part of the pin."""
+    return " ".join(definition.lower().split())
 
 
 def add_staff(db: Connection) -> uuid.UUID:

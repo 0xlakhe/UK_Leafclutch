@@ -191,9 +191,60 @@ Mutation proofs, on a scratch copy `leafclutch_scratch_test` created from
    RAISE DBAPIError`. The migration's function and trigger were restored and the whole file
    passed on the scratch database (`85 passed`).
 
-The open question from part 1 stands: `section_version.section_key` is not tied to the
-owning `page_section.section_key`; `DATABASE.md` defines no such constraint and none was
-added.
+### 2026-11-27 — review round: hold the page section identity
+
+Applied the review findings to the same revision, still in place: it is unpushed, and
+`9cad54d` is the last commit that touches it; no database outside this checkout has applied
+it. `app/models.py` is unchanged because the fix is triggers and functions only.
+
+High 1, the "a `page_section` item has its row" invariant held on insert only:
+`content_item_page_section_row` now fires `after insert or update of kind`, so an item
+cannot become a `page_section` without a row. `assert_page_section_item_kept()` and the
+deferred constraint trigger `page_section_row_kept` (`after delete on page_section`) close
+the other side with the invariant, not the event: a delete is refused only when the item is
+still a `page_section` and no replacement row exists, so a delete-and-reinsert in one
+transaction passes. `assert_page_section_position()` and `page_section_immutable`
+(`before update on page_section`) freeze `item_id`, `page_id`, `section_key` and
+`sort_order`; a no-op update passes. The review's correction added the versions condition
+to `assert_page_section_row()`: a `page_section` item that still has a `section_version`
+cannot leave the kind, even after its row is deleted in the same transaction.
+
+High 2, the duplicated, mutable, unguarded section key: `assert_section_version_key()` and
+`section_version_key_guard` (`before insert or update of section_key`) refuse a version for
+a non-`page_section` item, a version without its page row, a key that differs from the
+owning row, and any key change. That also closes Medium 2 at the root: a `section_version`
+can only exist for a `page_section` item, so `assert_section_child` needs no kind check. A
+project version can no longer gain a `section_version`.
+
+Medium 3: `normalise_constraint` in `tests/test_page_sections.py` now keeps PostgreSQL's
+parentheses and only lower-cases and collapses whitespace, so a regrouped expression cannot
+pass. Every expected definition was copied from PostgreSQL and still matches. The same
+change was safe in `tests/test_content_spine.py`, whose expected strings also carry the
+parentheses, so it was applied there too.
+
+Lows: an `about` row with a CTA joins the `section_version_hero_ctas` cases; the
+landing-page delete test now expects the refusal while its sections exist, and deletes the
+section items first before the page; the function-body pins stay fragment checks, recorded
+under Remaining with the reason.
+
+Mutation proofs, on a scratch copy `leafclutch_scratch_test` created from
+`leafclutch_test` and dropped afterwards:
+
+1. Dropped `section_version_key_guard`: `test_a_section_version_key_must_match_its_section`
+   failed with `Failed: DID NOT RAISE DBAPIError`; the restored trigger passed.
+2. Replaced `assert_page_section_item_kept()` with `return null;`:
+   `test_a_live_page_section_row_cannot_be_deleted` failed with `Failed: DID NOT RAISE
+   DBAPIError`; the restored body passed.
+3. Regrouped `section_version_hero_ctas` as `(section_key = 'hero' or primary_label is
+   null) and ...`: `test_every_documented_constraint_matches_its_definition` failed with
+   the two definitions side by side; the restored constraint passed.
+4. Removed the versions condition from `assert_page_section_row()`:
+   `test_a_section_item_with_versions_cannot_change_kind` failed with `Failed: DID NOT
+   RAISE DBAPIError`; the restored function passed, and the whole file passed on the
+   scratch database (`105 passed`).
+
+The part-2 open question about `section_version.section_key` is closed by High 2:
+`section_version_key_guard` now ties the key to the owning `page_section` row.
 
 ## Decisions made
 
@@ -206,7 +257,7 @@ added.
   §Section copy has the same thirteen; the thirteen are implemented.
 - `section_version.section_key` is not tied to `page_section.section_key`: `DATABASE.md`
   defines no such constraint and the brief says not to add one. Recorded under Open
-  questions.
+  questions. Superseded by the review round: `section_version_key_guard` now enforces it.
 - A published `section_version_item` refuses an edit or delete with `published section
   version is immutable`, from `assert_section_version_item`, not the generic `published
   version content is immutable`: PostgreSQL fires `before` row triggers in name order, and
@@ -218,6 +269,20 @@ added.
   rule.
 - The brief's part-1 text says "the four page_section checks"; the table has three, and the
   work log now says three.
+- The review round's delete guard tests the invariant, not the delete event: the condition
+  also requires that no replacement `page_section` row exists, so a delete-and-reinsert in
+  one transaction is allowed while a direct delete and a landing-page cascade are refused.
+- `section_version_key_guard` is the root fix for the child guard: since a version can only
+  exist for a `page_section` item with a matching key, `assert_section_child` keeps reading
+  the version key alone and needs no kind check (Medium 2).
+- A `page_section` item with versions cannot leave the kind even after its row is deleted,
+  because those versions would be orphaned; `assert_page_section_row()` carries that rule.
+- `normalise_constraint` keeps PostgreSQL's parentheses in both catalog test files, so a
+  regrouped expression fails; both files' expected definitions already matched the
+  parenthesised output.
+- The function-body pins remain fragment checks, as in tasks 0003/0004; deferred with the
+  review's agreement because the behavioural tests and the mutation proofs cover the
+  branches.
 
 ## Files changed
 
@@ -239,6 +304,20 @@ added.
 - Part 2: `Backend/tests/test_staff_schema.py` gains the six child tables in the cleanup
   truncate list.
 - Part 2: `Backend/docs/work/0007-landing-page-sections.md` — this update.
+- Review round: `Backend/migrations/versions/0005_page_sections.py` gains the update-of-kind
+  event, `assert_page_section_item_kept`/`page_section_row_kept`,
+  `assert_page_section_position`/`page_section_immutable`,
+  `assert_section_version_key`/`section_version_key_guard`, the versions condition in
+  `assert_page_section_row` and the extended downgrade.
+- Review round: `Backend/tests/test_page_sections.py` gains the guard tests, the
+  parenthesis-preserving normaliser, the `about` CTA case, the rewritten landing-page
+  delete tests, the new trigger and `tgattr` pins and the three new function-body pins;
+  105 cases in the file.
+- Review round: `Backend/tests/test_content_spine.py` gains the update bit for
+  `content_item_page_section_row` and the parenthesis-preserving normaliser.
+- Review round: `Backend/docs/DATABASE.md` documents the new trigger events, the three
+  functions, their messages and the corrected invariant wording.
+- Review round: `Backend/docs/work/0007-landing-page-sections.md` — this update.
 
 ## Migrations
 
@@ -260,6 +339,15 @@ added.
   six new tables, then the part-1 objects. The round trip was re-run after the extension:
   `alembic downgrade base` downgraded all five revisions, `alembic upgrade head` upgraded
   all five, and `alembic current` reported `0005_page_sections (head)`.
+- The review round extends the same revision further: `content_item_page_section_row` now
+  fires `after insert or update of kind`; `page_section_row_kept` is a deferred constraint
+  trigger `after delete on page_section`; `page_section_immutable` is `before update`; and
+  `section_version_key_guard` is `before insert or update of section_key`. Its downgrade
+  drops those three triggers and `assert_page_section_item_kept`,
+  `assert_page_section_position` and `assert_section_version_key` before the tables, then
+  follows the part-2 order. The round trip was re-run: `alembic downgrade base` downgraded
+  all five revisions, `alembic upgrade head` upgraded all five, and `alembic current`
+  reported `0005_page_sections (head)`.
 
 ## Tests
 
@@ -331,6 +419,54 @@ with `content_item_page_section_row` kept and `assert_page_section_row()` replac
 attachment but not the rule. The restored function and trigger gave `1 passed`, and the
 whole file passed on the scratch database (`85 passed`). The scratch database was dropped.
 
+The review round, run from `Backend/` on 2026-11-27 against PostgreSQL 18 in Docker (port
+5434):
+
+| Command | Result |
+| --- | --- |
+| `uv run ruff check .` | `All checks passed!` |
+| `uv run mypy app` | `Success: no issues found in 6 source files` |
+| `uv run pytest -q` | `315 passed, 4 warnings in 1.52s` |
+| `uv run pytest -q --import-mode=importlib` | `315 passed, 4 warnings in 1.38s` |
+| `uv run alembic check` | `No new upgrade operations detected.` |
+| `uv run alembic downgrade base` | all five revisions downgraded |
+| `uv run alembic upgrade head` | all five revisions upgraded |
+| `uv run alembic current` | `0005_page_sections (head)` |
+
+Review-round mutation proofs on `leafclutch_scratch_test`:
+
+```
+tests/test_page_sections.py:1269: Failed: DID NOT RAISE DBAPIError
+1 failed, 1 warning in 0.26s
+```
+
+after dropping `section_version_key_guard`; the restored trigger gave `1 passed`.
+
+```
+tests/test_page_sections.py:1004: Failed: DID NOT RAISE DBAPIError
+1 failed, 1 warning in 0.17s
+```
+
+after replacing `assert_page_section_item_kept()` with `return null;`; the restored body
+gave `1 passed`.
+
+```
+E     {'section_version_hero_ctas': ('c', "check ((((section_key = 'hero'::page_section_key) or (primary_label is null)) and (primary_href is null) and (secondary_label is null) and (secondary_href is null)))")} != {'section_version_hero_ctas': ('c', "check (((section_key = 'hero'::page_section_key) or ((primary_label is null) and (primary_href is null) and (secondary_label is null) and (secondary_href is null))))")}
+FAILED tests/test_page_sections.py::test_every_documented_constraint_matches_its_definition
+1 failed, 1 warning in 0.27s
+```
+
+after regrouping `section_version_hero_ctas`; the restored constraint gave `1 passed`.
+
+```
+tests/test_page_sections.py:1332: Failed: DID NOT RAISE DBAPIError
+1 failed, 1 warning in 0.19s
+```
+
+after removing the versions condition from `assert_page_section_row()`; the restored
+function passed and the whole file passed on the scratch database (`105 passed`). The
+scratch database was dropped.
+
 ## Review
 
 ## Docs updated
@@ -344,24 +480,30 @@ whole file passed on the scratch database (`85 passed`). The scratch database wa
   §Section references and §Publication and immutability already specify the six tables and
   their guards, and the slice still exposes no endpoint, so `CONTRACT.md`, `ADMIN.md` and
   OpenAPI do not move.
+- Correction (review round): the two "no documentation change" lines above are superseded.
+  `DATABASE.md` §Section items now documents `content_item_page_section_row` on
+  `insert or update of kind`, `page_section_row_kept`, `page_section_immutable` and the
+  versions condition in `assert_page_section_row`; §Section copy documents
+  `section_version_key_guard` and the key rule; the Migrations table row for
+  `0005_page_sections` names the five child tables and the guards. `CONTRACT.md`,
+  `ADMIN.md` and OpenAPI still do not move: no endpoint is exposed.
 
 ## Remaining
 
-- No code, test or migration work remains for this task. Part 2 landed in this commit; the
-  independent review and the orchestrator's accept/reject decision are the next gate.
+- One review Low is deferred as instructed: the function-body catalogue checks remain
+  fragment checks rather than exact `pg_get_functiondef` comparisons, as in tasks
+  0003/0004. The reason is recorded with the review: the behavioural tests and the four
+  mutation proofs cover each branch.
+- No other code, test or migration work remains for this task; the independent re-review
+  and the orchestrator's decision are the next gate.
 
 ## Next
 
 ## Open questions
 
-- `section_version.section_key` is not constrained to match the `page_section.section_key`
-  of the item that owns the version. `DATABASE.md` §Section copy defines no such
-  constraint and the brief says not to add one; the mismatch is left to FastAPI and the
-  publish gate. Confirm that is intended.
-- Part 2 adds no constraint tying them: `assert_section_child` reads the version's
-  `section_key`, while `assert_section_version_item` reads the owning `page_section` row,
-  so a hand-written `section_version` can still disagree with the `page_section` row it
-  belongs to. The same FastAPI/publish-gate assumption applies.
+- None open. The earlier question about `section_version.section_key` is resolved: the
+  review round added `section_version_key_guard`, so the key is tied to the owning
+  `page_section` row and cannot change.
 
 ## Not verified
 
@@ -374,4 +516,6 @@ whole file passed on the scratch database (`85 passed`). The scratch database wa
 - The part-2 guards were exercised through SQL only: no application code reads or writes
   the six tables yet, so there is no service-level path to verify, and the part-2 runs were
   against the local PostgreSQL 18 container only.
+- The review-round mutation proofs and the round trip ran on this checkout's local
+  PostgreSQL 18 container; nothing was run against staging or production.
 
