@@ -4,8 +4,9 @@ The FastAPI service behind the Leafclutch UK website and admin panel. It is the 
 of the system that holds database credentials and talks to PostgreSQL.
 
 M1 is the runnable skeleton: configuration, application assembly, a liveness endpoint, the
-SQLAlchemy/Alembic baseline and a local PostgreSQL service. There are no domain tables or
-feature endpoints yet.
+SQLAlchemy/Alembic baseline and a local PostgreSQL service. M2 adds the first two
+revisions — the extensions, every enum and the `staff` table with its last-Admin guard.
+There are no feature endpoints yet.
 
 ## Setup
 
@@ -40,8 +41,10 @@ uv run mypy app
 uv run pytest
 ```
 
-Tests construct the engine but open no connection, so they do not need a running
-database.
+The unit tests need no database. The database-backed tests (`tests/test_staff_schema.py`
+and `tests/test_migrations.py`) use `leafclutch_test` and need the local service described
+below. A session fixture applies the `auth` stand-in and `alembic upgrade head` once, then
+each test runs in a transaction that is rolled back.
 
 The suite refuses a database whose name does not end in `_test` and a host that is not
 loopback. It derives the port from `POSTGRES_PORT` (the environment, then `.env`), and
@@ -70,6 +73,19 @@ The Compose host port is configurable. `POSTGRES_PORT` defaults to 5432; when th
 already in use, set it in `.env` to a free port (5434 in this checkout) and change the port
 in `DATABASE_URL` to match. The container always listens on 5432 internally.
 
+Before the first migration, a fresh local database needs the minimal `auth` schema.
+Supabase owns that schema in production; `scripts/bootstrap_local.sql` creates
+`auth.users (id uuid primary key)` and is idempotent, so it is a no-op against Supabase. It
+is a local harness step, not a migration: `staff.user_id` references `auth.users`, and a
+plain PostgreSQL container has no `auth` schema.
+
+```bash
+docker compose exec -T db psql -U leafclutch -d leafclutch -v ON_ERROR_STOP=1 \
+  < scripts/bootstrap_local.sql
+```
+
+The test fixture runs the same script against `leafclutch_test` before migrating.
+
 Alembic reads the URL from application settings (`.env` or the environment), never from
 `alembic.ini`:
 
@@ -82,7 +98,12 @@ Create and apply migrations:
 ```bash
 uv run alembic revision -m "describe the change"
 uv run alembic upgrade head
+uv run alembic check
 ```
+
+`alembic check` compares `app/models.py` with the migrated database and must report no new
+upgrade operations. The `auth` schema is excluded from autogenerate because Supabase owns
+it; the local `auth.users` stub is never part of a revision.
 
 The init scripts only run when the volume is first created. To rebuild a broken local
 database from scratch, `docker compose down -v` and start it again; this deletes all local
@@ -96,8 +117,10 @@ data.
 | `app/db.py` | `Base`, engine and session factory builders, `get_session` dependency |
 | `app/health.py` | `GET /health`, liveness only |
 | `app/main.py` | `create_app()` and the lifespan that owns the engine |
+| `app/models.py` | `Base.metadata`: the `staff` table and the `staff_role` enum |
 | `migrations/` | Alembic environment and revisions |
-| `tests/` | Health, configuration and database-construction tests |
+| `scripts/bootstrap_local.sql` | Idempotent `auth.users` stand-in for local databases |
+| `tests/` | Health, configuration, engine construction, migrations and the staff schema |
 | `compose.yaml`, `docker/initdb/` | Local PostgreSQL 18 and the test database |
 
 The engine and session factory live on `app.state`, created in the lifespan and disposed
