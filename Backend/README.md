@@ -43,6 +43,10 @@ uv run pytest
 Tests construct the engine but open no connection, so they do not need a running
 database.
 
+The suite refuses a database whose name does not end in `_test` and a host that is not
+loopback. It derives the port from `POSTGRES_PORT` (the environment, then `.env`), and
+`TEST_DATABASE_URL` is the deliberate override for CI.
+
 ## Database
 
 Start the local PostgreSQL 16 service and wait for it to become healthy:

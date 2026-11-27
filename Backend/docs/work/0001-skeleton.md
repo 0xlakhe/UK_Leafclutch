@@ -82,6 +82,14 @@ pydantic-settings.
   held the failed Compose output, was replaced by the successful block in commit 79d68f3.
   The failure summary remains in the "Checks" entry above; the deleted output is not
   reproduced. The review-fix block in `## Tests` supersedes the 79d68f3 output in turn.
+- **2026-11-27 — Test-target guard (recheck).** Replaced the `setdefault` bootstrap with
+  `tests/database_target.py`: `TEST_DATABASE_URL` first, otherwise
+  `127.0.0.1:<POSTGRES_PORT>/leafclutch_test` with the port from the environment, then
+  only `POSTGRES_PORT` from `Backend/.env`, then 5432. Only `_test` databases on loopback
+  are accepted; an exported `DATABASE_URL` is never used and a non-test value stops the
+  run. `python-dotenv` is now a declared dev dependency. 20 tests pass; the production-URL
+  run fails collection with the guard message, and the clean-environment run passes on the
+  `.env` port 5434.
 
 ## Decisions made
 
@@ -96,9 +104,11 @@ pydantic-settings.
   sessions should not flush implicitly, and objects should stay usable after commit.
 - Alembic takes the URL from `get_settings()`, not `alembic.ini`. A literal `%` (possible
   in a password) is escaped before being stored in the ConfigParser option.
-- Tests set `DATABASE_URL` (the `leafclutch_test` database created by the init script) and
-  `ENVIRONMENT=test` in `conftest.py` before importing the app, and clear the settings
-  cache around every test. They construct an engine but open no connection.
+- The test bootstrap enforces its target: `conftest.py` runs before any application
+  import and only accepts a database whose name ends in `_test` on a loopback host
+  (`127.0.0.1`, `localhost` or `::1`). It sets `DATABASE_URL` to that validated target
+  and `ENVIRONMENT=test` unconditionally, and clears the settings cache around every
+  test. Tests construct an engine but open no connection.
 - `[tool.uv] package = false` because the service is an application, not an installable
   package. `uv.lock` is committed.
 - The health response is a Pydantic model with `status: Literal["ok"]`. It is liveness
@@ -114,9 +124,12 @@ pydantic-settings.
   (`127.0.0.1:${POSTGRES_PORT:-5432}:5432`). The credentials are a fixed local throwaway
   in the repository, so binding every interface would expose a known-password database to
   the local network; the password stays a Compose-local default, not a deployed secret.
-- The test bootstrap derives the URL port from `POSTGRES_PORT` (default 5432) and uses
-  `os.environ.setdefault`, so a CI-supplied `DATABASE_URL` wins. `app.config` is imported
-  only after the environment is populated. M1 tests still open no connection.
+- `TEST_DATABASE_URL` is the deliberate CI override. Otherwise the test URL is derived on
+  `127.0.0.1` with the port from `POSTGRES_PORT` (environment, then only that key from
+  `Backend/.env`, then 5432) and the `leafclutch_test` database. An exported `DATABASE_URL`
+  is never the target and is validated only so a production or non-loopback value stops
+  the run. The derived host is `127.0.0.1`, matching the IPv4-only Compose bind instead of
+  relying on libpq's `localhost` fallback.
 - `log_level` is removed from `Settings` and `.env.example`: nothing consumed it. Logging
   configuration arrives with M20, when there is a real consumer. `environment` stays.
 - `test_unknown_route_returns_404` is deleted: it asserts Starlette's routing, not this
@@ -173,6 +186,17 @@ Review fixes:
 - `Backend/docs/DATABASE.md` — open question 1 records the confirmed data layer
 - `Backend/docs/work/0001-skeleton.md` — this record
 
+Recheck (test-target guard):
+
+- `Backend/pyproject.toml` — `python-dotenv` dev dependency
+- `Backend/uv.lock` — resolved with `python-dotenv` as a direct dev dependency
+- `Backend/.env.example` — `DATABASE_URL` uses `127.0.0.1`
+- `Backend/README.md` — test-target guard paragraph
+- `Backend/tests/database_target.py` — new resolver and validator
+- `Backend/tests/conftest.py` — guarded target; `app.config` imported in the fixture
+- `Backend/tests/test_conftest.py` — replaced with guard and port tests
+- `Backend/docs/work/0001-skeleton.md` — this record
+
 `Backend/.gitignore` already contained the Python ignores and was left as it was.
 
 ## Migrations
@@ -183,9 +207,8 @@ exists and no table is created; `Base.metadata` stays empty until M2.
 
 ## Tests
 
-The block below is an **actual run** from the review-fix round. The 12-test block from
-commit 79d68f3 is **superseded**; the first-iteration failure output was removed by that
-commit and its summary remains in the "Checks" work-log entry.
+The block below is an **actual run** from the recheck round. The earlier 14-test block is
+**superseded**.
 
 ```
 $ uv run ruff check .
@@ -195,11 +218,12 @@ $ uv run mypy app
 Success: no issues found in 5 source files
 
 $ uv run pytest
-tests/test_config.py .....                                               [ 35%]
-tests/test_conftest.py ..                                                [ 50%]
-tests/test_db.py .....                                                   [ 85%]
+collected 20 items
+tests/test_config.py .....                                               [ 25%]
+tests/test_conftest.py ........                                          [ 65%]
+tests/test_db.py .....                                                   [ 90%]
 tests/test_health.py ..                                                  [100%]
-======================== 14 passed, 1 warning in 0.24s =========================
+======================== 20 passed, 1 warning in 0.26s =========================
 ```
 
 The warning is the known one:
@@ -215,68 +239,67 @@ Coverage: health 200 and payload; health still 200 with a deliberately unreachab
 database URL (proves liveness does not touch the database); required `DATABASE_URL`;
 unknown environment rejected; defaults; cached settings; settings read from the
 environment; engine URL; session factory binding; `get_session` using the factory on
-`app.state`; lifespan storing and disposing the engine; conftest keeping a caller-supplied
-`DATABASE_URL` and deriving the URL port from `POSTGRES_PORT`. The framework-only 404 test
-and the `log_level` default assertion are removed per review. Role and empty-state tests
-are not applicable: M1 has no auth, collections or tables.
+`app.state`; lifespan storing and disposing the engine. Test-target guard: an explicit
+`TEST_DATABASE_URL` is accepted; a non-`_test` database is refused; a non-loopback host is
+refused; an ambient production `DATABASE_URL` is refused with its password redacted; an
+ambient test URL is not used as the target; `POSTGRES_PORT` comes from the environment or
+the `.env` file with the environment winning; `ENVIRONMENT` is forced to `test`. The
+framework-only 404 test and the `log_level` default assertion are removed per review. Role
+and empty-state tests are not applicable: M1 has no auth, collections or tables.
 
-Database checks. The local `.env` is git-ignored and not committed; it sets
-`POSTGRES_PORT=5434`.
+Guard check — an exported production `DATABASE_URL` must fail collection:
 
 ```
-$ docker compose config
-    ports:
-      - mode: ingress
-        host_ip: 127.0.0.1
-        target: 5432
-        published: "5434"
-        protocol: tcp
+$ DATABASE_URL=postgresql+psycopg://prod:prod@db.production.example:5432/leafclutch uv run pytest
+ImportError while loading conftest '.../Backend/tests/conftest.py'.
+tests/conftest.py:18: in <module>
+    os.environ["DATABASE_URL"] = resolve_test_database_url(os.environ, ENV_FILE)
 ...
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - pg_isready -h 127.0.0.1 -U leafclutch -d leafclutch
+E   RuntimeError: Refusing database URL 'postgresql+psycopg://prod:***@db.production.example:5432/leafclutch': the database name must end in '_test'.
+exit=4
+```
 
-$ docker compose up -d --wait --force-recreate db
- Container leafclutch-db-1 Recreate
- Container leafclutch-db-1 Recreated
- Container leafclutch-db-1 Starting
- Container leafclutch-db-1 Started
- Container leafclutch-db-1 Waiting
- Container leafclutch-db-1 Healthy
+Clean environment — passes and derives the port from `.env`:
 
+```
+$ env -u DATABASE_URL -u ENVIRONMENT -u POSTGRES_PORT uv run pytest -q
+....................                                                     [100%]
+20 passed, 1 warning in 0.17s
+exit=0
+
+$ env -u DATABASE_URL -u POSTGRES_PORT ENVIRONMENT=production uv run pytest -q
+20 passed, 1 warning in 0.27s
+exit=0
+
+$ env -u DATABASE_URL -u ENVIRONMENT -u POSTGRES_PORT PYTHONPATH=tests \
+    uv run python -c "import os; from pathlib import Path; from database_target import resolve_test_database_url; print(resolve_test_database_url(os.environ, Path('.env')))"
+postgresql+psycopg://leafclutch:leafclutch@127.0.0.1:5434/leafclutch_test
+```
+
+The local `.env` is git-ignored and sets `POSTGRES_PORT=5434`, which the resolved URL
+shows. Compose and Alembic remain current:
+
+```
 $ docker compose ps
-NAME              IMAGE         COMMAND                  SERVICE   CREATED         STATUS                   PORTS
-leafclutch-db-1   postgres:16   "docker-entrypoint.s…"   db        5 seconds ago   Up 5 seconds (healthy)   127.0.0.1:5434->5432/tcp
-
-$ docker compose port db 5432
-127.0.0.1:5434
+NAME              IMAGE         COMMAND                  SERVICE   CREATED          STATUS                    PORTS
+leafclutch-db-1   postgres:16   "docker-entrypoint.s…"   db        17 minutes ago   Up 17 minutes (healthy)   127.0.0.1:5434->5432/tcp
 
 $ uv run alembic current
 INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
 INFO  [alembic.runtime.migration] Will assume transactional DDL.
 exit=0
-
-$ docker compose --env-file /dev/null config   # with no .env, the default is 5432
-    ports:
-      - mode: ingress
-        host_ip: 127.0.0.1
-        target: 5432
-        published: "5432"
-        protocol: tcp
 ```
 
 The initdb databases (`leafclutch`, `leafclutch_test`) still exist; the volume was not
-recreated, so the init script did not rerun. Alembic exits 0 with no revision applied and
-no error.
+recreated, so the init script did not rerun.
 
 ## Review
 
 ## Docs updated
 
-- `Backend/README.md`: setup, run, checks, database (loopback-only service, configurable
-  host port and `up -d --wait db`), layout and documentation table; renamed from the empty
-  `Backend/README.MD` with `git mv`.
+- `Backend/README.md`: setup, run, checks (including the test-target guard), database
+  (loopback-only service, configurable host port and `up -d --wait db`), layout and
+  documentation table; renamed from the empty `Backend/README.MD` with `git mv`.
 - `Backend/docs/DATABASE.md`: open question 1 now records the confirmed sync SQLAlchemy
   2.0 + psycopg 3 / Python 3.12 data layer and why async was rejected. Nothing else in
   that document changed.
@@ -288,9 +311,9 @@ no error.
 
 ## Remaining
 
-none. Every acceptance criterion is met and demonstrated; all three Medium and seven Low
-findings are fixed, and no check from the review brief is outstanding. Environment limits
-are recorded under `## Not verified`.
+The recheck found two remaining items: the unguarded test target and the Low items. Both
+are fixed in this commit and evidenced in `## Tests`. What remains is the orchestrator's
+re-review; no acceptance criterion, deferred finding or unrun check is outstanding.
 
 ## Next
 
@@ -305,7 +328,7 @@ are recorded under `## Not verified`.
 - `uv sync` from a literal clean checkout — it ran in this working tree and resolved
   `uv.lock`; no second clone was made.
 - The default Compose port 5432 — this machine cannot bind it (native PostgreSQL 18), so
-  only the `POSTGRES_PORT=5434` override was verified end to end. `docker compose config`
-  confirms the default still resolves to 5432.
+  only the `POSTGRES_PORT=5434` override was verified end to end.
 - Database-backed tests — M1 has none; the suite constructs an engine but opens no
-  connection. The `POSTGRES_PORT`-derived test URL is unit-tested, not used to connect.
+  connection. The clean-environment run above prints the resolved test URL but does not
+  connect to it.
