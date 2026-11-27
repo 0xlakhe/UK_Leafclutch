@@ -515,6 +515,34 @@ Next: M5 — landing page sections.
 
 Canonical: [0006-archive-content-pointers.md](0006-archive-content-pointers.md)
 
+---
+
+## Task: TASK-0007 — landing page sections
+
+Status: done
+Date: 2026-11-27
+Milestone: M5
+
+Changed:
+- `migrations/versions/0005_page_sections.py`: `page_section`, `section_version`, the five child tables and `section_version_item`; three indexes; seven functions and seventeen triggers covering the deferred row invariant, the section key, the position freeze, the child-key rules, the reference rules and the version item; `app/models.py`; `tests/test_page_sections.py` (112 cases); `tests/test_content_spine.py` (trigger inventory); `tests/test_staff_schema.py` (cleanup); `README.md`; `DATABASE.md` §Section items and §Section copy.
+
+Evidence:
+- `uv run pytest -q` → 322 passed in both import modes; ruff and mypy green; `alembic check` clean at `0005_page_sections`; `downgrade base` → `upgrade head` clean.
+- The validation harness on a fresh PostgreSQL 18: 58 SQL blocks, 46 public tables, 18 PASS, exit 0.
+- Mutation proofs: dropping the key guard, the row-kept function, the versions condition or the version-item trigger each fails its test with `DID NOT RAISE`; a regrouped constraint fails the parenthesis-preserving catalog test.
+- Real `BEGIN … COMMIT` probes: changed reinserts refused, identical reinsert and same-transaction create-delete commit, sections-then-page commits, a draft version move refused.
+
+Decisions:
+- The document's insert-only guard was widened to the invariant: the row must exist at commit, keep its identity on reinsert, and the item cannot change kind with versions.
+- `section_version.section_key` is tied to the owning `page_section` row and cannot change; `content_version.item_id` is frozen on update.
+- `page_section` identity and position are immutable; the seed inserts, never reorders.
+- The unpushed `0005` revision was extended in place across the review rounds.
+
+Remaining: the function-body pins stay fragment checks; the suite uses `set constraints … immediate` while real-commit runs are recorded evidence. The design workspace needs the `DATABASE.md` sync.
+Next: M6 — the catalogue.
+
+Canonical: [0007-landing-page-sections.md](0007-landing-page-sections.md)
+
 
 
 

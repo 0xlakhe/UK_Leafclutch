@@ -1,7 +1,7 @@
 ---
 task: 0007
 title: Landing page sections
-status: in-progress
+status: done
 branch: prabesh
 started: 2026-11-27
 updated: 2026-11-27
@@ -34,7 +34,7 @@ The guards installed here:
 
 ## Acceptance criteria
 
-- [ ] `0005_page_sections` creates, with every column, default, constraint and index from
+- [x] `0005_page_sections` creates, with every column, default, constraint and index from
       `DATABASE.md`:
       - `page_section` (§Section items): the three checks, both composite
         foreign keys, both uniques, the primary key and `page_section_page_idx`;
@@ -47,25 +47,25 @@ The guards installed here:
       - `section_version_item` (§Section references, `:856-880`): `section_version_item_pk`,
         all four checks, the composite `(item_id, item_kind)` foreign key, the partial
         unique `section_version_item_order_key` and `section_version_item_lookup_idx`.
-- [ ] The three functions and every trigger above are copied verbatim, including the
+- [x] The three functions and every trigger above are copied verbatim, including the
       exception messages `page section item % needs a page_section row`, `row belongs to
       section %, not %`, `a section reference cannot move between versions or items`,
       `references belong to a page section version`, `published section version is
       immutable`, `section item has no page_section row` and
       `section % cannot reference a %`.
-- [ ] `content_item_page_section_row` is a **constraint trigger**, `after insert` on
+- [x] `content_item_page_section_row` is a **constraint trigger**, `after insert` on
       `content_item`, `deferrable initially deferred`, for each row.
-- [ ] `assert_section_version_item` is attached `before insert or update or delete` on
+- [x] `assert_section_version_item` is attached `before insert or update or delete` on
       `section_version_item`; `assert_section_child` triggers are `before insert or
       update` on their five tables.
-- [ ] The seven immutability attachments match §Publication and immutability
+- [x] The seven immutability attachments match §Publication and immutability
       (`:2147-2173`). No later revision's trigger (services, projects, settings, legal)
       appears.
-- [ ] A test inserts ten `content_item` rows of kind `page_section` with `page_section`
+- [x] A test inserts ten `content_item` rows of kind `page_section` with `page_section`
       rows in PRD §5 order — `hero, proof, services, not-sure, work, process, about,
       testimonials, faqs, contact` at `sort_order` 0–9 — and reads them back in that
       order. This is the M5 exit check.
-- [ ] Database tests cover, and fail when the guard is dropped:
+- [x] Database tests cover, and fail when the guard is dropped:
       - the deferred constraint trigger: a `page_section` item with no `page_section` row
         fails at commit, and one inserted in the same transaction succeeds;
       - a duplicate `(page_id, section_key)` and a duplicate `(page_id, sort_order)`;
@@ -91,12 +91,12 @@ The guards installed here:
         with a live reply is `on delete restrict` as documented;
       - `archived_at`/`archived_by` and `page_section` cascade: deleting a landing-page
         item removes its `page_section` rows.
-- [ ] `alembic check` is clean at `0005_page_sections`; `app/models.py` models all eight
+- [x] `alembic check` is clean at `0005_page_sections`; `app/models.py` models all eight
       tables including the partial index predicate; `downgrade base` → `upgrade head`
       succeeds.
-- [ ] `uv run ruff check .`, `uv run mypy app`, `uv run pytest` (and
+- [x] `uv run ruff check .`, `uv run mypy app`, `uv run pytest` (and
       `--import-mode=importlib`) pass; output quoted.
-- [ ] Only `Backend/` changes.
+- [x] Only `Backend/` changes.
 
 ## Non-goals
 
@@ -620,6 +620,38 @@ and rolls back; these real-commit runs are recorded evidence, not suite tests.
 
 ## Review
 
+Three review rounds with one independent reviewer session, plus a final delta recheck.
+
+Round 1: two High and three Medium. High 1 — the "a `page_section` item has its row"
+invariant was insert-only, so a kind update, a direct row delete or a landing-page cascade
+left a section rowless. High 2 — `section_version.section_key` was duplicated and
+unguarded, so a version's key could disagree with its section; the child and reference
+guards read different copies. Medium 1 — `page_section` had no position guard. Medium 2 —
+`assert_section_child` did not check the owning item kind. Medium 3 — the catalog
+normaliser stripped parentheses, so a regrouping could pass. Fixed in `62fec05`.
+
+Round 2: one High and two Medium. High — delete-and-reinsert only proved that *a* row
+existed, so the key, order or page could change. Medium — the deferred insert event
+rejected a valid same-transaction create-and-delete, and the sections-then-page test did
+not prove the commit path. Medium — a draft `content_version` could move to another item,
+carrying its typed rows. Fixed in `f8d74c1` and `f458a4f`.
+
+Round 3: no Critical, High or Medium. Three Lows: force both constraints in the
+create-and-delete test, record the real-commit evidence, and qualify the version-item
+wording. Fixed in `970eccd`.
+
+Evidence: 322 tests in both modes, ruff, mypy, `alembic check` clean at
+`0005_page_sections`, the migration round trip, and the validation harness on a fresh
+PostgreSQL 18 — 58 SQL blocks, 46 public tables, 18 PASS, exit 0. The reviewer reproduced
+every mutation proof: dropping the key guard, the row-kept function, the versions
+condition or the version-item trigger each fails its test with `DID NOT RAISE`; the
+regrouped constraint fails the catalog test.
+
+Outcome: **accepted**. No open Critical, High or Medium. Two Lows are deferred with
+reasons: the function-body pins remain fragment checks, and the suite exercises deferred
+failures through `set constraints … immediate` while the real-commit runs are recorded
+evidence.
+
 ## Docs updated
 
 - `Backend/README.md`: the `app/models.py` and `tests/` Layout rows now name the
@@ -655,6 +687,9 @@ and rolls back; these real-commit runs are recorded evidence, not suite tests.
 
 ## Next
 
+M6 — the catalogue, revisions `0006_services` to `0008_proof`: service groups and services,
+projects with images and technologies, proof figures, testimonials and client logos, their
+triggers and indexes, and the ten-section references they feed.
 ## Open questions
 
 - None open. The earlier question about `section_version.section_key` is resolved: the
