@@ -49,12 +49,16 @@ loopback. It derives the port from `POSTGRES_PORT` (the environment, then `.env`
 
 ## Database
 
-Start the local PostgreSQL 16 service and wait for it to become healthy:
+Start the local PostgreSQL 18 service and wait for it to become healthy:
 
 ```bash
 docker compose up -d --wait db
 docker compose ps
 ```
+
+The Compose image is the PostgreSQL major the schema was validated on (see the
+[database validation runbook](docs/runbooks/database-validation.md)); production runs on
+Supabase, and its major is confirmed at deployment.
 
 The container creates the `leafclutch` database and, on first initialisation, the
 `leafclutch_test` database used by the test suite. It publishes the database on the
@@ -94,7 +98,7 @@ data.
 | `app/main.py` | `create_app()` and the lifespan that owns the engine |
 | `migrations/` | Alembic environment and revisions |
 | `tests/` | Health, configuration and database-construction tests |
-| `compose.yaml`, `docker/initdb/` | Local PostgreSQL 16 and the test database |
+| `compose.yaml`, `docker/initdb/` | Local PostgreSQL 18 and the test database |
 
 The engine and session factory live on `app.state`, created in the lifespan and disposed
 on shutdown. They are never module globals.
