@@ -225,6 +225,16 @@ EXPECTED_TRIGGERS: dict[str, tuple[str, bool, bool, bool, bool, bool]] = {
         False,
         True,
     ),
+    # Installed by 0005_page_sections; its deferrable flags are pinned in
+    # tests/test_page_sections.py.
+    "content_item_page_section_row": (
+        "content_item",
+        True,
+        False,
+        True,
+        False,
+        False,
+    ),
     "content_version_bump_next": (
         "content_version",
         True,

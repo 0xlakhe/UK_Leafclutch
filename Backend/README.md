@@ -135,10 +135,10 @@ data.
 | `app/db.py` | `Base`, engine and session factory builders, `get_session` dependency |
 | `app/health.py` | `GET /health`, liveness only |
 | `app/main.py` | `create_app()` and the lifespan that owns the engine |
-| `app/models.py` | `Base.metadata`: the `staff`, `media` and content-spine tables and their enums |
+| `app/models.py` | `Base.metadata`: the `staff`, `media`, content-spine and page-section tables and their enums |
 | `migrations/` | Alembic environment and revisions |
 | `scripts/bootstrap_local.sql` | Idempotent `auth.users` stand-in for local databases |
-| `tests/` | Health, configuration, engine construction, migrations and the staff, media and content-spine schemas |
+| `tests/` | Health, configuration, engine construction, migrations and the staff, media, content-spine and page-section schemas |
 | `compose.yaml`, `docker/initdb/` | Local PostgreSQL 18 and the test database |
 
 The engine and session factory live on `app.state`, created in the lifespan and disposed

@@ -318,7 +318,7 @@ def cleanup_committed_staff(engine: Engine, user_ids: list[uuid.UUID]) -> None:
         cleanup.execute(
             sa.text(
                 "truncate table content_seo, content_publication, content_version, "
-                "content_item, media, staff"
+                "content_item, page_section, section_version, media, staff"
             )
         )
         cleanup.execute(sa.delete(auth_users).where(auth_users.c.id.in_(user_ids)))

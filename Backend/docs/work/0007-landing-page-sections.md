@@ -122,22 +122,125 @@ the three functions, then the eight tables in reverse dependency order.
 
 ## Work log
 
+### 2026-11-27 — part 1: `page_section` and `section_version`
+
+Implemented the first of the two commits planned for this task. `Backend/app/models.py` now
+defines `PAGE_SECTION_KEY`, `page_section` and `section_version`.
+`Backend/migrations/versions/0005_page_sections.py` creates them with the four
+`page_section` checks, both composite foreign keys, both uniques,
+`page_section_page_idx`, all twelve `section_version` checks, `assert_page_section_row()`
+and its deferred constraint trigger, and `section_version_immutable` reusing
+`prevent_published_content_mutation()` from 0004.
+
+`Backend/tests/test_page_sections.py` covers the deferred trigger in both directions, the
+page-section constraints and cascades, every `section_version` check with a refusal and a
+valid row for each of the ten keys, the image restrict, the draft/published immutability
+and the catalog definitions.
+
+Two existing tests had to learn the new schema. `Backend/tests/test_content_spine.py`
+compares every trigger on the content tables, and `content_item_page_section_row` is now
+one of them. `Backend/tests/test_staff_schema.py` truncates the committed rows its
+concurrency tests create, and the new foreign keys make `page_section` and
+`section_version` part of that truncate. Both changes are consequences of this slice, not
+weakened assertions.
+
 ## Decisions made
+
+- The deferred trigger's `tgdeferrable`/`tginitdeferred` flags and its function body are
+  pinned in `tests/test_page_sections.py`; `tests/test_content_spine.py` only gains the
+  expected entry so its per-table comparison stays exact.
+- The `test_staff_schema.py` cleanup truncates the two new tables explicitly rather than
+  using `CASCADE`, so the tables it clears stay visible.
+- The brief says "fourteen text columns" but lists thirteen names, and `DATABASE.md`
+  §Section copy has the same thirteen; the thirteen are implemented.
+- `section_version.section_key` is not tied to `page_section.section_key`: `DATABASE.md`
+  defines no such constraint and the brief says not to add one. Recorded under Open
+  questions.
 
 ## Files changed
 
+- `Backend/app/models.py` — `PAGE_SECTION_KEY`, `page_section`, `section_version`.
+- `Backend/migrations/versions/0005_page_sections.py` — new revision.
+- `Backend/tests/test_page_sections.py` — new tests, 46 cases.
+- `Backend/tests/test_content_spine.py` — expected trigger entry for
+  `content_item_page_section_row`.
+- `Backend/tests/test_staff_schema.py` — cleanup truncate list gains the two new tables.
+- `Backend/README.md` — the two Layout rows name the page-section tables.
+- `Backend/docs/work/0007-landing-page-sections.md` — this update.
+
 ## Migrations
 
+- `0005_page_sections` (`down_revision = '0004_content_core'`) creates `page_section`,
+  `section_version`, `page_section_page_idx`, `assert_page_section_row()`,
+  `content_item_page_section_row` (constraint trigger, `after insert`, `deferrable
+  initially deferred`) and `section_version_immutable` (`before insert or update or
+  delete`, reusing `prevent_published_content_mutation()`).
+- Downgrade drops both triggers, then the function, then `section_version`, then
+  `page_section`. Verified with `alembic downgrade base` → `alembic upgrade head` →
+  `alembic current`.
+
 ## Tests
+
+Run from `Backend/` on 2026-11-27 against PostgreSQL 18 in Docker (port 5434).
+
+| Command | Result |
+| --- | --- |
+| `uv run ruff check .` | `All checks passed!` |
+| `uv run mypy app` | `Success: no issues found in 6 source files` |
+| `uv run pytest -q` | `256 passed, 4 warnings in 1.29s` |
+| `uv run pytest -q --import-mode=importlib` | `256 passed, 4 warnings in 1.08s` |
+| `uv run alembic check` | `No new upgrade operations detected.` |
+| `uv run alembic downgrade base` | all five revisions downgraded |
+| `uv run alembic upgrade head` | all five revisions upgraded |
+| `uv run alembic current` | `0005_page_sections (head)` |
+
+Mutation check: a scratch copy, `leafclutch_scratch_test`, was created with
+`create database leafclutch_scratch_test template leafclutch_test`, and
+`content_item_page_section_row` was dropped there. The deferred test then failed:
+
+```
+AssertionError: Regex pattern did not match.
+  Actual message: '(psycopg.errors.UndefinedObject) constraint
+  "content_item_page_section_row" does not exist\n[SQL: set constraints
+  content_item_page_section_row immediate]'
+```
+
+Restoring the trigger with the migration's `create constraint trigger` made the same test
+pass (`1 passed`). The scratch database was dropped; the test database has no committed
+rows.
 
 ## Review
 
 ## Docs updated
 
+- `Backend/README.md`: the `app/models.py` and `tests/` Layout rows now name the
+  page-section tables and schema.
+- No change to `DATABASE.md`, `CONTRACT.md`, `ADMIN.md` or OpenAPI: the schema was already
+  documented in `DATABASE.md` §Section items, §Section copy and §Publication and
+  immutability, and this slice exposes no endpoint.
+
 ## Remaining
+
+- Part 2 of the task: `section_paragraph`, `process_stage`, `process_assurance`,
+  `faq_item`, `contact_next_step`, `section_version_item`, `assert_section_child` with
+  its five triggers, `assert_section_version_item` with `section_version_item_assert`, the
+  remaining immutability attachments, and the ten-section order test.
 
 ## Next
 
 ## Open questions
 
+- `section_version.section_key` is not constrained to match the `page_section.section_key`
+  of the item that owns the version. `DATABASE.md` §Section copy defines no such
+  constraint and the brief says not to add one; the mismatch is left to FastAPI and the
+  publish gate. Confirm that is intended.
+
 ## Not verified
+
+- The deferred trigger's failure at a real `COMMIT`. The test transaction is always rolled
+  back, so the test switches the constraint to immediate inside a savepoint, as the brief
+  directs; PostgreSQL's commit-time check rests on the documented semantics, not a
+  committed failure in this suite.
+- `alembic downgrade base` was run only on the local development database; there is no
+  staging or production database in this environment.
+

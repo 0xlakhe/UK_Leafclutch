@@ -182,6 +182,22 @@ CONTENT_KIND = sa.Enum(
     create_type=False,
 )
 
+# Created by revision 0001_extensions_enums, like the content kind.
+PAGE_SECTION_KEY = sa.Enum(
+    "hero",
+    "proof",
+    "services",
+    "not-sure",
+    "work",
+    "process",
+    "about",
+    "testimonials",
+    "faqs",
+    "contact",
+    name="page_section_key",
+    create_type=False,
+)
+
 VERSION_STATUS = sa.Enum(
     "draft", "in_review", "published", name="version_status", create_type=False
 )
@@ -424,5 +440,127 @@ content_seo = sa.Table(
     sa.CheckConstraint(
         "seo_description is null or char_length(seo_description) between 1 and 160",
         name="content_seo_description_length",
+    ),
+)
+
+page_section = sa.Table(
+    "page_section",
+    Base.metadata,
+    sa.Column("item_id", sa.Uuid(), nullable=False),
+    sa.Column(
+        "kind",
+        CONTENT_KIND,
+        nullable=False,
+        server_default=sa.text("'page_section'::content_kind"),
+    ),
+    sa.Column("page_id", sa.Uuid(), nullable=False),
+    sa.Column(
+        "page_kind",
+        CONTENT_KIND,
+        nullable=False,
+        server_default=sa.text("'landing_page'::content_kind"),
+    ),
+    sa.Column("section_key", PAGE_SECTION_KEY, nullable=False),
+    sa.Column("sort_order", sa.Integer(), nullable=False),
+    sa.PrimaryKeyConstraint("item_id"),
+    sa.ForeignKeyConstraint(
+        ["item_id", "kind"],
+        ["content_item.id", "content_item.kind"],
+        name="page_section_item_fk",
+        ondelete="CASCADE",
+    ),
+    sa.ForeignKeyConstraint(
+        ["page_id", "page_kind"],
+        ["content_item.id", "content_item.kind"],
+        name="page_section_page_fk",
+        ondelete="CASCADE",
+    ),
+    sa.UniqueConstraint("page_id", "section_key", name="page_section_key_unique"),
+    sa.UniqueConstraint("page_id", "sort_order", name="page_section_order_unique"),
+    sa.CheckConstraint("kind = 'page_section'", name="page_section_kind"),
+    sa.CheckConstraint("page_kind = 'landing_page'", name="page_section_page_kind"),
+    sa.CheckConstraint("sort_order >= 0", name="page_section_sort"),
+    sa.Index("page_section_page_idx", "page_id", "sort_order"),
+)
+
+section_version = sa.Table(
+    "section_version",
+    Base.metadata,
+    sa.Column(
+        "version_id",
+        sa.Uuid(),
+        sa.ForeignKey("content_version.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    sa.Column("section_key", PAGE_SECTION_KEY, nullable=False),
+    sa.Column("heading", sa.Text()),
+    sa.Column("intro", sa.Text()),
+    sa.Column("body", sa.Text()),
+    sa.Column("nav_label", sa.Text()),
+    sa.Column("eyebrow", sa.Text()),
+    sa.Column("primary_label", sa.Text()),
+    sa.Column("primary_href", sa.Text()),
+    sa.Column("secondary_label", sa.Text()),
+    sa.Column("secondary_href", sa.Text()),
+    sa.Column("cta_label", sa.Text()),
+    sa.Column("cta_href", sa.Text()),
+    sa.Column("privacy_text", sa.Text()),
+    sa.Column("privacy_link_label", sa.Text()),
+    sa.Column("image_id", sa.Uuid(), sa.ForeignKey("media.id", ondelete="RESTRICT")),
+    sa.PrimaryKeyConstraint("version_id"),
+    sa.CheckConstraint(
+        "heading is null or char_length(heading) <= 70",
+        name="section_version_heading_length",
+    ),
+    sa.CheckConstraint(
+        "section_key <> 'proof' or heading is null",
+        name="section_version_heading_key",
+    ),
+    sa.CheckConstraint(
+        "section_key in ('services', 'work', 'process') or intro is null",
+        name="section_version_intro_key",
+    ),
+    sa.CheckConstraint(
+        "section_key in ('hero', 'not-sure', 'contact') or body is null",
+        name="section_version_body_key",
+    ),
+    sa.CheckConstraint(
+        "section_key in ('services', 'work', 'process', 'about', 'contact') "
+        "or nav_label is null",
+        name="section_version_nav_key",
+    ),
+    sa.CheckConstraint(
+        "section_key = 'hero' or eyebrow is null",
+        name="section_version_eyebrow_key",
+    ),
+    sa.CheckConstraint(
+        "section_key = 'hero' or (primary_label is null and primary_href is null "
+        "and secondary_label is null and secondary_href is null)",
+        name="section_version_hero_ctas",
+    ),
+    sa.CheckConstraint(
+        "section_key = 'not-sure' or (cta_label is null and cta_href is null)",
+        name="section_version_cta_key",
+    ),
+    sa.CheckConstraint(
+        "section_key = 'contact' "
+        "or (privacy_text is null and privacy_link_label is null)",
+        name="section_version_privacy_key",
+    ),
+    sa.CheckConstraint(
+        "section_key = 'about' or image_id is null",
+        name="section_version_image_key",
+    ),
+    sa.CheckConstraint(
+        "(primary_label is null or char_length(primary_label) <= 30) "
+        "and (secondary_label is null or char_length(secondary_label) <= 30) "
+        "and (cta_label is null or char_length(cta_label) <= 30)",
+        name="section_version_cta_label_length",
+    ),
+    sa.CheckConstraint(
+        "(primary_href is null or char_length(primary_href) <= 200) "
+        "and (secondary_href is null or char_length(secondary_href) <= 200) "
+        "and (cta_href is null or char_length(cta_href) <= 200)",
+        name="section_version_href_length",
     ),
 )
