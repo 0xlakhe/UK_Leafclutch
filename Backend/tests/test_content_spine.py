@@ -31,7 +31,10 @@ IMMUTABLE_VERSION = "published version .* is immutable"
 PUBLICATION_NOT_PUBLISHED = "publication version must be published"
 PUBLICATION_OTHER_ITEM = "version .* does not belong to item"
 PUBLICATION_ARCHIVED = "archived item cannot be published"
+PUBLICATION_ITEM_FIXED = "publication item cannot change"
 IMMUTABLE_CONTENT = "published version content is immutable"
+CONTENT_MOVE = "content rows cannot move between versions"
+ARCHIVE_POINTER = "archive removes the publication pointer first"
 
 CONTENT_TABLES = (content_item, content_version, content_publication, content_seo)
 
@@ -41,11 +44,11 @@ CONTENT_TABLES = (content_item, content_version, content_publication, content_se
 EXPECTED_CONSTRAINTS: dict[str, tuple[str, str]] = {
     "content_item_archive": (
         "c",
-        "CHECK (((archived_at IS NULL) OR (archived_by IS NOT NULL)))",
+        "CHECK (((archived_at IS NULL) = (archived_by IS NULL)))",
     ),
     "content_item_archived_by_fkey": (
         "f",
-        "FOREIGN KEY (archived_by) REFERENCES staff(user_id) ON DELETE SET NULL",
+        "FOREIGN KEY (archived_by) REFERENCES staff(user_id) ON DELETE RESTRICT",
     ),
     "content_item_created_by_fkey": (
         "f",
@@ -55,7 +58,8 @@ EXPECTED_CONSTRAINTS: dict[str, tuple[str, str]] = {
     "content_item_next_version": ("c", "CHECK ((next_version > 0))"),
     "content_item_path_format": (
         "c",
-        "CHECK (((path IS NULL) OR (path ~ '^/[a-z0-9-]*(/[a-z0-9-]+)*$'::text)))",
+        "CHECK (((path IS NULL) OR (path ~ "
+        "'^/([a-z0-9-]+(/[a-z0-9-]+)*)?$'::text)))",
     ),
     "content_item_path_required": (
         "c",
@@ -152,9 +156,18 @@ EXPECTED_CONSTRAINTS: dict[str, tuple[str, str]] = {
     ),
 }
 
-# The six indexes in DATABASE.md, with their predicates. The primary key and the two
-# composite uniques are constraints above, not indexes here.
+# Every index on the four tables, including the ones backing a constraint, so an extra
+# index fails the comparison as well as a changed expression or predicate. The six
+# documented in DATABASE.md are the partial and lookup indexes; the rest back the primary
+# keys and the three uniques.
 EXPECTED_INDEXES: dict[str, str] = {
+    "content_item_pkey": (
+        "CREATE UNIQUE INDEX content_item_pkey ON public.content_item USING btree (id)"
+    ),
+    "content_item_id_kind_key": (
+        "CREATE UNIQUE INDEX content_item_id_kind_key ON public.content_item USING "
+        "btree (id, kind)"
+    ),
     "content_item_path_key": (
         "CREATE UNIQUE INDEX content_item_path_key ON public.content_item USING btree "
         "(path) WHERE (path IS NOT NULL)"
@@ -171,6 +184,18 @@ EXPECTED_INDEXES: dict[str, str] = {
         "CREATE INDEX content_item_kind_idx ON public.content_item USING btree (kind) "
         "WHERE (archived_at IS NULL)"
     ),
+    "content_version_pkey": (
+        "CREATE UNIQUE INDEX content_version_pkey ON public.content_version USING "
+        "btree (id)"
+    ),
+    "content_version_item_id_version_number_key": (
+        "CREATE UNIQUE INDEX content_version_item_id_version_number_key ON "
+        "public.content_version USING btree (item_id, version_number)"
+    ),
+    "content_version_item_id_id_key": (
+        "CREATE UNIQUE INDEX content_version_item_id_id_key ON public.content_version "
+        "USING btree (item_id, id)"
+    ),
     "content_version_one_open": (
         "CREATE UNIQUE INDEX content_version_one_open ON public.content_version USING "
         "btree (item_id) WHERE (status = ANY (ARRAY['draft'::version_status, "
@@ -180,10 +205,26 @@ EXPECTED_INDEXES: dict[str, str] = {
         "CREATE INDEX content_version_item_status_idx ON public.content_version USING "
         "btree (item_id, status)"
     ),
+    "content_publication_pkey": (
+        "CREATE UNIQUE INDEX content_publication_pkey ON public.content_publication "
+        "USING btree (item_id)"
+    ),
+    "content_seo_pkey": (
+        "CREATE UNIQUE INDEX content_seo_pkey ON public.content_seo USING btree "
+        "(version_id)"
+    ),
 }
 
 # ``tgtype`` bits: 1 row, 2 before, 4 insert, 8 delete, 16 update.
 EXPECTED_TRIGGERS: dict[str, tuple[str, bool, bool, bool, bool, bool]] = {
+    "content_item_archive_guard": (
+        "content_item",
+        True,
+        True,
+        False,
+        False,
+        True,
+    ),
     "content_version_bump_next": (
         "content_version",
         True,
@@ -197,7 +238,7 @@ EXPECTED_TRIGGERS: dict[str, tuple[str, bool, bool, bool, bool, bool]] = {
         True,
         True,
         False,
-        False,
+        True,
         True,
     ),
     "content_version_set_updated_at": (
@@ -407,13 +448,19 @@ def test_bump_next_version_raises_the_counter_past_an_inserted_version(
     assert select_item(db, item_id).next_version == 6
 
 
-def test_bump_next_version_never_lowers_the_counter(db: Connection) -> None:
+def test_bump_next_version_keeps_the_high_water_mark(db: Connection) -> None:
     editor = add_staff(db)
-    item_id = add_item(db, editor, next_version=10)
+    item_id = add_item(db, editor)
 
-    add_version(db, item_id, editor, version_number=2)
-
-    assert select_item(db, item_id).next_version == 10
+    five = add_version(db, item_id, editor, version_number=5)
+    assert select_item(db, item_id).next_version == 6
+    publish_version(db, five, editor)
+    # A lower number inserted later must not move the counter back.
+    two = add_version(db, item_id, editor, version_number=2)
+    assert select_item(db, item_id).next_version == 6
+    publish_version(db, two, editor)
+    add_version(db, item_id, editor, version_number=6)
+    assert select_item(db, item_id).next_version == 7
 
 
 def test_a_second_open_version_is_refused(db: Connection) -> None:
@@ -501,13 +548,11 @@ def test_the_publish_update_sets_updated_at(db: Connection) -> None:
         db, item_id, editor, updated_at=datetime(2000, 1, 1, tzinfo=UTC)
     )
 
-    db.execute(
-        sa.update(content_version)
-        .where(content_version.c.id == version_id)
-        .values(updated_by=editor)
-    )
+    publish_version(db, version_id, editor)
 
-    assert select_version(db, version_id).updated_at.year != 2000
+    version = select_version(db, version_id)
+    assert version.status == "published"
+    assert version.updated_at.year != 2000
 
 
 @pytest.mark.parametrize(
@@ -536,6 +581,35 @@ def test_a_published_version_cannot_be_updated(
             )
 
     assert select_version(db, version_id).status == "published"
+
+
+def test_a_published_version_cannot_be_deleted(db: Connection) -> None:
+    editor = add_staff(db)
+    item_id = add_item(db, editor)
+    version_id = add_version(db, item_id, editor)
+    publish_version(db, version_id, editor)
+
+    with pytest.raises(DBAPIError, match=IMMUTABLE_VERSION):
+        with db.begin_nested():
+            db.execute(
+                sa.delete(content_version).where(content_version.c.id == version_id)
+            )
+
+    assert count_rows(db, content_version, content_version.c.id == version_id) == 1
+
+
+def test_deleting_an_item_with_a_published_version_is_refused(db: Connection) -> None:
+    editor = add_staff(db)
+    item_id = add_item(db, editor)
+    version_id = add_version(db, item_id, editor)
+    publish_version(db, version_id, editor)
+
+    with pytest.raises(DBAPIError, match=IMMUTABLE_VERSION):
+        with db.begin_nested():
+            db.execute(sa.delete(content_item).where(content_item.c.id == item_id))
+
+    assert count_rows(db, content_item, content_item.c.id == item_id) == 1
+    assert count_rows(db, content_version, content_version.c.id == version_id) == 1
 
 
 @pytest.mark.parametrize(
@@ -638,12 +712,84 @@ def test_a_publication_refuses_an_archived_item(db: Connection) -> None:
             add_publication(db, item_id, version_id, editor)
 
 
-def test_archived_at_without_archived_by_is_refused(db: Connection) -> None:
+def test_a_publication_can_point_to_another_published_version(db: Connection) -> None:
     editor = add_staff(db)
+    item_id = add_item(db, editor)
+    first_id = add_version(db, item_id, editor)
+    publish_version(db, first_id, editor)
+    add_publication(db, item_id, first_id, editor)
+    second_id = add_version(db, item_id, editor, version_number=2)
+    publish_version(db, second_id, editor)
+
+    db.execute(
+        sa.update(content_publication)
+        .where(content_publication.c.item_id == item_id)
+        .values(version_id=second_id)
+    )
+
+    assert (
+        db.execute(
+            sa.select(content_publication.c.version_id).where(
+                content_publication.c.item_id == item_id
+            )
+        ).scalar_one()
+        == second_id
+    )
+
+
+def test_a_publication_update_refuses_a_draft_version(db: Connection) -> None:
+    editor = add_staff(db)
+    item_id = add_item(db, editor)
+    first_id = add_version(db, item_id, editor)
+    publish_version(db, first_id, editor)
+    add_publication(db, item_id, first_id, editor)
+    draft_id = add_version(db, item_id, editor, version_number=2)
+
+    with pytest.raises(DBAPIError, match=PUBLICATION_NOT_PUBLISHED):
+        with db.begin_nested():
+            db.execute(
+                sa.update(content_publication)
+                .where(content_publication.c.item_id == item_id)
+                .values(version_id=draft_id)
+            )
+
+
+def test_a_publication_cannot_change_its_item(db: Connection) -> None:
+    editor = add_staff(db)
+    item_id = add_item(db, editor)
+    version_id = add_version(db, item_id, editor)
+    publish_version(db, version_id, editor)
+    add_publication(db, item_id, version_id, editor)
+    other_item_id = add_item(db, editor, path="/other")
+    other_version_id = add_version(db, other_item_id, editor)
+    publish_version(db, other_version_id, editor)
+
+    with pytest.raises(DBAPIError, match=PUBLICATION_ITEM_FIXED):
+        with db.begin_nested():
+            db.execute(
+                sa.update(content_publication)
+                .where(content_publication.c.item_id == item_id)
+                .values(item_id=other_item_id, version_id=other_version_id)
+            )
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"archived_at": datetime.now(UTC)},
+        {"archived_by": "editor"},
+    ],
+    ids=["archived-at-only", "archived-by-only"],
+)
+def test_the_archive_flags_move_together(
+    db: Connection, values: dict[str, object]
+) -> None:
+    editor = add_staff(db)
+    resolved = {key: editor if value == "editor" else value for key, value in values.items()}
 
     with pytest.raises(IntegrityError, match="content_item_archive"):
         with db.begin_nested():
-            add_item(db, editor, archived_at=datetime.now(UTC))
+            add_item(db, editor, **resolved)
 
     item_id = add_item(db, editor, path="/live")
     assert select_item(db, item_id).archived_at is None
@@ -665,10 +811,56 @@ def test_an_archived_item_records_both_flags(db: Connection) -> None:
     assert item.archived_by == editor
 
 
+def test_deleting_the_archiver_is_refused(db: Connection) -> None:
+    creator = add_staff(db)
+    archiver = add_staff(db)
+    item_id = add_item(db, creator, path="/archived")
+    db.execute(
+        sa.update(content_item)
+        .where(content_item.c.id == item_id)
+        .values(archived_at=datetime.now(UTC), archived_by=archiver)
+    )
+
+    with pytest.raises(IntegrityError, match="content_item_archived_by_fkey"):
+        with db.begin_nested():
+            db.execute(sa.delete(staff).where(staff.c.user_id == archiver))
+
+    assert select_item(db, item_id).archived_by == archiver
+
+
+def test_archiving_a_live_item_is_refused_until_unpublished(db: Connection) -> None:
+    editor = add_staff(db)
+    item_id = add_item(db, editor)
+    version_id = add_version(db, item_id, editor)
+    publish_version(db, version_id, editor)
+    add_publication(db, item_id, version_id, editor)
+
+    with pytest.raises(DBAPIError, match=ARCHIVE_POINTER):
+        with db.begin_nested():
+            db.execute(
+                sa.update(content_item)
+                .where(content_item.c.id == item_id)
+                .values(archived_at=datetime.now(UTC), archived_by=editor)
+            )
+
+    assert select_item(db, item_id).archived_at is None
+
+    db.execute(
+        sa.delete(content_publication).where(content_publication.c.item_id == item_id)
+    )
+    db.execute(
+        sa.update(content_item)
+        .where(content_item.c.id == item_id)
+        .values(archived_at=datetime.now(UTC), archived_by=editor)
+    )
+
+    assert select_item(db, item_id).archived_at is not None
+
+
 @pytest.mark.parametrize(
     "path",
-    ["/", "/about", "/legal/privacy", "/a-b/c-d"],
-    ids=["root", "one-segment", "two-segments", "hyphens"],
+    ["/", "/about", "/a/b", "/legal/privacy", "/a-b/c-d"],
+    ids=["root", "one-segment", "two-segments", "two-named-segments", "hyphens"],
 )
 def test_a_valid_path_is_accepted(db: Connection, path: str) -> None:
     editor = add_staff(db)
@@ -680,8 +872,16 @@ def test_a_valid_path_is_accepted(db: Connection, path: str) -> None:
 
 @pytest.mark.parametrize(
     "path",
-    ["about", "/About", "/about/", "/a//b", "/about_us", "//"],
-    ids=["no-slash", "uppercase", "trailing-slash", "empty-segment", "underscore", "empty"],
+    ["about", "/About", "/about/", "//a", "/a//b", "/about_us", "//"],
+    ids=[
+        "no-slash",
+        "uppercase",
+        "trailing-slash",
+        "empty-first-segment",
+        "empty-middle-segment",
+        "underscore",
+        "empty",
+    ],
 )
 def test_an_invalid_path_is_refused(db: Connection, path: str) -> None:
     editor = add_staff(db)
@@ -886,6 +1086,26 @@ def test_seo_created_on_a_draft_is_frozen_after_publish(db: Connection) -> None:
     )
 
 
+def test_a_typed_row_cannot_move_off_a_published_version(db: Connection) -> None:
+    editor = add_staff(db)
+    item_id = add_item(db, editor)
+    published_id = add_version(db, item_id, editor)
+    add_seo(db, published_id, seo_title="Published title")
+    publish_version(db, published_id, editor)
+    draft_id = add_version(db, item_id, editor, version_number=2)
+
+    with pytest.raises(DBAPIError, match=CONTENT_MOVE):
+        with db.begin_nested():
+            db.execute(
+                sa.update(content_seo)
+                .where(content_seo.c.version_id == published_id)
+                .values(version_id=draft_id)
+            )
+
+    assert count_rows(db, content_seo, content_seo.c.version_id == published_id) == 1
+    assert count_rows(db, content_seo, content_seo.c.version_id == draft_id) == 0
+
+
 def test_seo_for_an_unknown_version_is_refused(db: Connection) -> None:
     with pytest.raises(IntegrityError, match="content_seo_version_id_fkey"):
         with db.begin_nested():
@@ -916,14 +1136,17 @@ def test_deleting_an_item_cascades_its_versions_and_seo(db: Connection) -> None:
     assert count_rows(db, content_seo, content_seo.c.version_id == version_id) == 0
 
 
-def test_deleting_a_version_named_by_a_publication_is_refused(db: Connection) -> None:
+def test_a_version_named_by_a_publication_cannot_be_deleted(db: Connection) -> None:
     editor = add_staff(db)
     item_id = add_item(db, editor)
     version_id = add_version(db, item_id, editor)
     publish_version(db, version_id, editor)
     add_publication(db, item_id, version_id, editor)
 
-    with pytest.raises(IntegrityError, match="content_publication_version_fk"):
+    # The publication can only name a published version, and the version immutability
+    # trigger refuses that delete before the composite foreign key is reached. The
+    # foreign key stays as the catalog-pinned backstop.
+    with pytest.raises(DBAPIError, match=IMMUTABLE_VERSION):
         with db.begin_nested():
             db.execute(sa.delete(content_version).where(content_version.c.id == version_id))
 
@@ -962,7 +1185,6 @@ def test_the_documented_indexes_and_predicates_are_installed(db: Connection) -> 
                 "'content_publication', 'content_seo')"
             )
         ).all()
-        if name in EXPECTED_INDEXES
     }
 
     assert installed == {
@@ -1005,15 +1227,26 @@ def test_the_installed_triggers_fire_on_the_documented_events(db: Connection) ->
             ],
         ),
         (
+            "prevent_archived_with_publication()",
+            [
+                "if old.archived_at is null and new.archived_at is not null",
+                "select 1 from content_publication where item_id = new.id",
+                "raise exception 'archive removes the publication pointer first'",
+            ],
+        ),
+        (
             "prevent_published_version_mutation()",
             [
                 "if old.status = 'published' then",
                 "raise exception 'published version % is immutable', old.id",
+                "if tg_op = 'delete' then return old",
             ],
         ),
         (
             "assert_publication_version()",
             [
+                "if tg_op = 'update' and new.item_id <> old.item_id then",
+                "raise exception 'publication item cannot change'",
                 "where cv.id = new.version_id and cv.item_id = new.item_id",
                 "raise exception 'version % does not belong to item %', "
                 "new.version_id, new.item_id",
@@ -1024,6 +1257,8 @@ def test_the_installed_triggers_fire_on_the_documented_events(db: Connection) ->
         (
             "prevent_published_content_mutation()",
             [
+                "if tg_op = 'update' and old.version_id is distinct from new.version_id then",
+                "raise exception 'content rows cannot move between versions'",
                 "v_version := case when tg_op = 'delete' then old.version_id "
                 "else new.version_id end",
                 "raise exception 'published version content is immutable'",
@@ -1031,7 +1266,13 @@ def test_the_installed_triggers_fire_on_the_documented_events(db: Connection) ->
             ],
         ),
     ],
-    ids=["bump", "version-immutable", "publication-assert", "content-immutable"],
+    ids=[
+        "bump",
+        "archive-guard",
+        "version-immutable",
+        "publication-assert",
+        "content-immutable",
+    ],
 )
 def test_the_installed_functions_pin_their_messages(
     db: Connection, function: str, fragments: list[str]

@@ -120,6 +120,25 @@ order.
   `content_version_one_open`: the one-open behavioural test failed with
   `DID NOT RAISE IntegrityError` and the index definition test failed on the missing
   index. The scratch database was dropped; the real test database was not altered.
+- **2026-11-27 — Review fixes (High 1–3, Medium, Lows).** Extended
+  `prevent_published_version_mutation` to `before update or delete` with a `return old`
+  delete branch, so a published version and any item cascade through it are refused;
+  added the `old.version_id is distinct from new.version_id` guard to
+  `prevent_published_content_mutation`; changed `content_item.archived_by` to
+  `on delete restrict`; added `prevent_archived_with_publication()` and
+  `content_item_archive_guard`; tightened `content_item_path_format` to
+  `^/([a-z0-9-]+(/[a-z0-9-]+)*)?$`; made `content_item_archive` symmetric; fixed the
+  publication item on update in `assert_publication_version`; and made the index
+  catalogue test compare the exact set of indexes on the four tables. Added the matching
+  behavioural tests, including the published delete, the item cascade, the typed-row
+  move, the archiver delete, the archive-with-pointer refusal, the publication pointer
+  updates, the `v5`-then-`v2` gap and the real publish-timestamp call. Updated
+  `Backend/docs/DATABASE.md` §Content items and versions, §Publication and immutability,
+  the publish-invariant table and the `0004_content_core` migration row. Because
+  `0004_content_core` had already been applied to both local databases and is unreleased,
+  their `public` schemas (both empty) were recreated and `upgrade head` re-ran; the
+  reviewer's leftover `leafclutch_m4_review` and `leafclutch_m4_review_test` databases
+  were dropped. The suite is now 210 tests.
 
 ## Decisions made
 
@@ -138,9 +157,37 @@ order.
   index expressions but not the `WHERE` predicate, so a changed predicate can pass
   `alembic check`. `test_the_documented_indexes_and_predicates_are_installed` compares
   `pg_get_indexdef` for the six indexes instead.
-- **`content_version_immutable` is `before update` only.** The publish update must pass;
-  the trigger checks `old.status`, so moving a draft or in-review row to published is
-  allowed and any later update is refused. The trigger-type test pins the bits.
+- **`content_version_immutable` covers update and delete.** The publish update must
+  pass; the trigger checks `old.status`, so moving a draft or in-review row to published
+  is allowed and any later update or delete is refused. The delete branch returns `old`;
+  the trigger-type test pins the bits. Deleting an item whose version is published is
+  therefore refused too, which is intended: `delete_content` only deletes
+  never-published items.
+- **A typed row cannot move between versions.** The guard is in the shared
+  `prevent_published_content_mutation` function, not a per-table trigger, because every
+  later typed table has the same rule. It fires before the status check, so a published
+  version's `content_seo` row cannot be reassigned to a draft.
+- **`archived_by` is `on delete restrict`, not `set null`.** The `content_item_archive`
+  check requires the flag pair, so `set null` would make deleting the archiver fail on
+  the check instead of the reference. Staff are deactivated rather than deleted, and the
+  archive record is audit evidence, so the reference stays and the check stays; the two
+  now agree.
+- **Archiving refuses a live item until its pointer is gone.** `archive_content` (M11)
+  deletes the publication pointer first, so the normal path passes; a direct archive that
+  left the item live is refused with `archive removes the publication pointer first`.
+- **The path regex requires a non-empty first segment.** `^/([a-z0-9-]+(/[a-z0-9-]+)*)?$`
+  keeps `/` for the landing page and rejects `//a`, which the previous expression
+  accepted.
+- **The publication item is fixed on update.** `assert_publication_version` refuses
+  `new.item_id <> old.item_id`; repointing to another published version of the same item
+  remains allowed, which is how a republish moves the pointer.
+- **The index catalogue is exhaustive.** The test now compares every index on the four
+  tables, including the primary-key and unique-constraint backers, so an unplanned extra
+  index fails as well as a changed expression or predicate.
+- **The publication foreign key is now a backstop, not the first refusal.** A publication
+  can only name a published version, and deleting a published version is refused by the
+  immutability trigger before `content_publication_version_fk` is reached. The FK keeps
+  its `on delete restrict` definition and the catalogue test pins it.
 - **`prevent_published_content_mutation` is attached only to `content_seo`.** The typed
   tables it also guards do not exist yet; their revisions attach the same function in
   M5 onwards.
@@ -158,9 +205,9 @@ order.
 
 New:
 
-- `Backend/migrations/versions/0004_content_core.py` — the four tables, six indexes, four
-  functions and five triggers
-- `Backend/tests/test_content_spine.py` — 84 behavioural and catalog tests
+- `Backend/migrations/versions/0004_content_core.py` — the four tables, six indexes, five
+  functions and six triggers
+- `Backend/tests/test_content_spine.py` — 96 behavioural and catalog tests
 - `Backend/docs/work/0004-content-spine.md` — this log
 
 Modified:
@@ -170,18 +217,24 @@ Modified:
 - `Backend/tests/test_staff_schema.py` — `cleanup_committed_staff` truncates the content
   tables before `staff`
 - `Backend/README.md` — the two layout rows that name tables
+- `Backend/docs/DATABASE.md` — the review round's table checks, foreign key, functions,
+  triggers, invariant table and migration row
 - `Backend/docs/work/README.md` — the orchestrator's 0004 index row, committed as it stood
 
-No `Frontend/`, `Admin/`, `DATABASE.md`, runbook, `CONTRACT.md`, `ADMIN.md` or dependency
-change; `uv.lock` is untouched.
+No `Frontend/`, `Admin/`, runbook, `CONTRACT.md`, `ADMIN.md` or dependency change;
+`uv.lock` is untouched. `DATABASE.md` was untouched in the first round and changed by the
+review fixes above.
 
 ## Migrations
 
 - `0004_content_core` (parent `0003_media`) creates `content_item`, `content_version`,
-  `content_publication` and `content_seo` in that order, then the six indexes, then
-  `bump_next_version`, `prevent_published_version_mutation`, `assert_publication_version`
-  and `prevent_published_content_mutation`, their five triggers (including
-  `content_version_set_updated_at`) via `op.execute`.
+  `content_publication` and `content_seo` in that order, then the six documented indexes,
+  then `bump_next_version`, `prevent_archived_with_publication`,
+  `prevent_published_version_mutation`, `assert_publication_version` and
+  `prevent_published_content_mutation`, their six triggers (including
+  `content_version_set_updated_at`) via `op.execute`. `archived_by` references staff
+  `on delete restrict`; the archive check is symmetric; the path format rejects an empty
+  first segment.
 - `upgrade` was applied to the test database by the suite fixture and to the development
   database by hand; `alembic check` reports no new operations at `0004_content_core`.
 - `downgrade base` → `upgrade head` succeeded on the development database. The downgrade
@@ -190,7 +243,8 @@ change; `uv.lock` is untouched.
 
 ## Tests
 
-Final green runs (PostgreSQL 18, `.env` target `leafclutch` at port 5434):
+First-round green runs (PostgreSQL 18, `.env` target `leafclutch` at port 5434;
+**superseded** by the review-fix round at the end of this section):
 
 ```
 $ uv run ruff check .
@@ -270,8 +324,93 @@ FAILED tests/test_content_spine.py::test_the_documented_indexes_and_predicates_a
 ```
 
 The scratch database was dropped; the real test database was not altered. The full suite
-is 198 tests; the four warnings are the known `httpx`/Starlette and Alembic
+was 198 tests; the four warnings are the known `httpx`/Starlette and Alembic
 `path_separator` deprecations carried from earlier tasks.
+
+Review-fix round (actual run). Both local `public` schemas were empty and were recreated
+before these commands because `0004_content_core` had already been applied with the
+first-round code:
+
+```
+$ uv run ruff check .
+All checks passed!
+
+$ uv run mypy app
+Success: no issues found in 6 source files
+
+$ uv run pytest -q
+210 passed, 4 warnings in 1.00s
+
+$ uv run pytest -q --import-mode=importlib
+210 passed, 4 warnings in 0.92s
+
+$ uv run alembic check
+No new upgrade operations detected.
+
+$ uv run alembic downgrade base
+INFO  [alembic.runtime.migration] Running downgrade 0004_content_core -> 0003_media, The content spine: items, versions, publication pointers, page SEO and their guards.
+INFO  [alembic.runtime.migration] Running downgrade 0003_media -> 0002_staff, The media table and the immutability trigger.
+INFO  [alembic.runtime.migration] Running downgrade 0002_staff -> 0001_extensions_enums, The staff table, the last-Admin guard and the timestamp trigger.
+INFO  [alembic.runtime.migration] Running downgrade 0001_extensions_enums -> , Extensions and every enum type.
+
+$ uv run alembic upgrade head
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_extensions_enums, Extensions and every enum type.
+INFO  [alembic.runtime.migration] Running upgrade 0001_extensions_enums -> 0002_staff, The staff table, the last-Admin guard and the timestamp trigger.
+INFO  [alembic.runtime.migration] Running upgrade 0002_staff -> 0003_media, The media table and the immutability trigger.
+INFO  [alembic.runtime.migration] Running upgrade 0003_media -> 0004_content_core, The content spine: items, versions, publication pointers, page SEO and their guards.
+
+$ uv run alembic current
+0004_content_core (head)
+```
+
+`tests/test_content_spine.py` alone is now 96 tests:
+
+```
+$ uv run pytest -q tests/test_content_spine.py
+96 passed, 1 warning in 0.79s
+```
+
+Every new or changed case, run as one selection:
+
+```
+$ uv run pytest -q \
+    tests/test_content_spine.py::test_a_published_version_cannot_be_deleted \
+    tests/test_content_spine.py::test_deleting_an_item_with_a_published_version_is_refused \
+    tests/test_content_spine.py::test_bump_next_version_keeps_the_high_water_mark \
+    tests/test_content_spine.py::test_the_publish_update_sets_updated_at \
+    tests/test_content_spine.py::test_the_archive_flags_move_together \
+    tests/test_content_spine.py::test_deleting_the_archiver_is_refused \
+    tests/test_content_spine.py::test_archiving_a_live_item_is_refused_until_unpublished \
+    tests/test_content_spine.py::test_a_valid_path_is_accepted \
+    tests/test_content_spine.py::test_an_invalid_path_is_refused \
+    tests/test_content_spine.py::test_a_publication_can_point_to_another_published_version \
+    tests/test_content_spine.py::test_a_publication_update_refuses_a_draft_version \
+    tests/test_content_spine.py::test_a_publication_cannot_change_its_item \
+    tests/test_content_spine.py::test_a_typed_row_cannot_move_off_a_published_version \
+    tests/test_content_spine.py::test_a_version_named_by_a_publication_cannot_be_deleted \
+    tests/test_content_spine.py::test_the_installed_functions_pin_their_messages \
+    tests/test_content_spine.py::test_the_installed_triggers_fire_on_the_documented_events \
+    tests/test_content_spine.py::test_the_documented_indexes_and_predicates_are_installed \
+    tests/test_content_spine.py::test_every_documented_constraint_matches_its_definition
+33 passed, 1 warning in 0.37s
+```
+
+Mutation proof for High 1, on `leafclutch_m4_scratch_test` (a copy of the current
+`leafclutch_test`) with `content_version_immutable` dropped:
+
+```
+$ uv run pytest -q \
+    tests/test_content_spine.py::test_a_published_version_cannot_be_deleted \
+    tests/test_content_spine.py::test_deleting_an_item_with_a_published_version_is_refused
+E       Failed: DID NOT RAISE DBAPIError
+E       Failed: DID NOT RAISE DBAPIError
+FAILED tests/test_content_spine.py::test_a_published_version_cannot_be_deleted
+FAILED tests/test_content_spine.py::test_deleting_an_item_with_a_published_version_is_refused
+2 failed, 1 warning in 0.22s
+```
+
+The scratch database was dropped. `leafclutch_m4_review` and
+`leafclutch_m4_review_test` were dropped; only `leafclutch` and `leafclutch_test` remain.
 
 ## Review
 
@@ -279,9 +418,11 @@ is 198 tests; the four warnings are the known `httpx`/Starlette and Alembic
 
 - `Backend/README.md` — the `app/models.py` and `tests/` layout rows now name the
   content-spine tables and schema.
-- `Backend/docs/DATABASE.md` — not edited, per the brief. It already defines the four
-  tables and every function and trigger this revision installs; nothing in it was
-  invalidated.
+- `Backend/docs/DATABASE.md` — updated in the review round: §Content items and versions
+  (foreign key, path regex, symmetric archive check, archive guard), §Publication and
+  immutability (delete branch, typed-row move guard, fixed publication item), the
+  publish-invariant table and the `0004_content_core` migration row. It was not edited in
+  the first round; the review made the document and the migration diverge.
 - `Backend/docs/ADMIN.md`, `Backend/docs/CONTRACT.md` — none: no role, screen, payload or
   endpoint changed.
 - OpenAPI — none: no endpoint was added or changed.
@@ -291,16 +432,20 @@ is 198 tests; the four warnings are the known `httpx`/Starlette and Alembic
 
 ## Remaining
 
-none
+None of the High, Medium or listed Low findings remain open. No other Low finding was
+supplied in the fix brief, so none is recorded as deferred here; if the full review had
+more, they are not in this work file.
 
 ## Open questions
 
-- **`content_version_set_updated_at` is not in the brief's four trigger pairs.**
-  `DATABASE.md` §Timestamps and the last Admin attaches it to `content_version`, a table
-  this revision creates, so it was installed using the existing `set_updated_at()`.
-  Confirm that is wanted here rather than deferred; removing it would leave a documented
-  trigger missing, keeping it makes this revision create five triggers rather than the
-  four listed in the acceptance criteria.
+- **Resolved by the review instruction:** `content_version_set_updated_at` stays in
+  `0004`. `DATABASE.md` §Timestamps and the last Admin attaches it to `content_version`,
+  and the review confirmed the table arrives here. The revision now has six triggers
+  (five guards plus the timestamp trigger).
+- **The review cites a `DATABASE.md` §Page validity that does not exist in this
+  checkout.** The changes were applied to §Content items and versions and §Publication
+  and immutability, which describe the affected objects, plus the publish-invariant table
+  and the migration row. Confirm that is where the review intended them.
 - Alembic 1.20 does not compare CHECK constraints or an index's `WHERE` predicate, so
   `alembic check` cannot prove either. The catalog tests compare the normalised
   `pg_get_constraintdef` and `pg_get_indexdef` instead. The normalisation drops
@@ -315,19 +460,21 @@ none
   container, not a Supabase project; the `eu-west-2` behaviour and extension versions
   there are unconfirmed.
 - Not every constraint has a dedicated behavioural test. `content_item_next_version`,
-  the formats and required-by-kind rules, the archive rule, the version status checks, the
-  SEO lengths, the one-open index, the singleton/path/slug uniqueness and the two cascade
-  and one restrict rules do. The foreign keys `content_item.created_by`,
-  `content_item.archived_by`, `content_version.created_by`/`updated_by`/`published_by`,
+  the formats and required-by-kind rules, both directions of the archive rule, the
+  version status checks, the SEO lengths, the one-open index, the singleton/path/slug
+  uniqueness, the two cascade rules, `content_item_archived_by_fkey`'s restrict and the
+  archive guard do. The foreign keys `content_item.created_by`,
+  `content_version.created_by`/`updated_by`/`published_by`,
   `content_publication.published_by` and `content_seo.og_image_id` are pinned by the
-  catalog definition test only; `archived_by`'s `SET NULL` and `og_image_id`'s
-  `RESTRICT` are not exercised.
+  catalog definition test only.
 - `content_item_kind_idx` and `content_version_item_status_idx` are pinned by the index
   definition test; no test asserts a query plan or that PostgreSQL uses them.
-- The mutation proof dropped `content_version_one_open` only. The other guards are
-  covered by behavioural tests and by the trigger/function catalog tests, not by a
-  per-guard mutation run.
+- The mutation proofs dropped `content_version_one_open` and, in the review round,
+  `content_version_immutable` only. The other guards are covered by behavioural tests and
+  by the trigger/function catalog tests, not by a per-guard mutation run.
 - The migration round trip ran on the development database, as task 0003 did; the test
   database was brought to head by the suite fixture and was not downgraded in this run.
+- The archive guard was exercised by a direct update, not by M11's `archive_content`,
+  which does not exist yet; the document states that function deletes the pointer first.
 - The publish/unpublish functions, grants, RLS and views are M11/M12, so the spine was
   exercised with direct SQL inside one transaction, not through the application.

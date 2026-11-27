@@ -350,11 +350,11 @@ create table content_item (
   created_by uuid not null references staff (user_id) on delete restrict,
   next_version integer not null default 1,
   archived_at timestamptz,
-  archived_by uuid references staff (user_id) on delete set null,
+  archived_by uuid references staff (user_id) on delete restrict,
 
   constraint content_item_next_version check (next_version > 0),
   constraint content_item_path_format check (
-    path is null or path ~ '^/[a-z0-9-]*(/[a-z0-9-]+)*$'
+    path is null or path ~ '^/([a-z0-9-]+(/[a-z0-9-]+)*)?$'
   ),
   constraint content_item_slug_format check (
     slug is null or slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$'
@@ -372,7 +372,7 @@ create table content_item (
     kind <> 'page_section' or (path is null and slug is null)
   ),
   constraint content_item_archive check (
-    archived_at is null or archived_by is not null
+    (archived_at is null) = (archived_by is null)
   ),
   unique (id, kind)
 );
@@ -389,8 +389,10 @@ than a trigger on every insert.
 
 Deleting content in the admin has two paths. `archive_content` is the normal delete: it
 unpublishes the item, sets `archived_at` and `archived_by`, and keeps the versions for
-audit. `restore_content` clears the flags; a restored item is not live until it is
-republished. `delete_content` permanently removes an item that was never published, has
+audit. The archive update is refused while a publication pointer still names the item;
+`archive_content` deletes the pointer first. `archived_by` is `on delete restrict`: staff
+are deactivated rather than deleted, and the archive record is audit evidence.
+`restore_content` clears the flags; a restored item is not live until it is republished. `delete_content` permanently removes an item that was never published, has
 no approval or legal approval, is not one of the three fixed kinds that are never created
 from the UI (the landing page, its sections and settings) and is not referenced by a
 section draft or a service group's services; a legal page is creatable, so a
@@ -435,7 +437,8 @@ create index content_version_item_status_idx on content_version (item_id, status
 A draft can be edited in place. It becomes `in_review` when an Editor submits it, and
 `published` when an Admin publishes. The partial unique index is what makes "one open
 version" a database rule rather than a convention. A published version is immutable;
-the trigger below refuses later writes.
+the trigger below refuses later updates and deletes, so deleting the item cascades
+nothing away. `delete_content` only ever deletes never-published items.
 
 The version row is an identity and state row. Its content is a typed row keyed by
 `version_id`: `content_seo` and `legal_page_version` for a legal page, `content_seo`
@@ -487,6 +490,32 @@ The publication pointer is the only thing that makes content live. Unpublishing
 deletes this row and creates a draft copy from the last published version in the same
 transaction; the published versions remain for history. A page's revision on the wire is
 the pointed version's `version_number`.
+
+The archive guard makes the pointer rule structural. `archive_content` unpublishes
+first, so the guard passes on the normal path, and a direct archive that left the item
+live is refused.
+
+```sql
+create or replace function prevent_archived_with_publication()
+returns trigger
+language plpgsql
+as $$
+begin
+  if old.archived_at is null
+     and new.archived_at is not null
+     and exists (
+       select 1 from content_publication where item_id = new.id
+     ) then
+    raise exception 'archive removes the publication pointer first';
+  end if;
+  return new;
+end;
+$$;
+
+create trigger content_item_archive_guard
+  before update on content_item
+  for each row execute function prevent_archived_with_publication();
+```
 
 ## Page sections
 
@@ -2017,17 +2046,23 @@ begin
   if old.status = 'published' then
     raise exception 'published version % is immutable', old.id;
   end if;
+
+  if tg_op = 'DELETE' then
+    return old;
+  end if;
   return new;
 end;
 $$;
 
 create trigger content_version_immutable
-  before update on content_version
+  before update or delete on content_version
   for each row execute function prevent_published_version_mutation();
 ```
 
 The publish update itself is allowed: it changes a draft or in-review row to
-published. Any later update sees `old.status = 'published'` and fails.
+published. Any later update or delete sees `old.status = 'published'` and fails; the
+delete branch returns `old`, so a draft version can still be deleted and a published
+version cannot. This also refuses an item cascade that would remove a published version.
 
 ```sql
 create or replace function assert_publication_version()
@@ -2038,6 +2073,10 @@ declare
   v_status version_status;
   v_archived timestamptz;
 begin
+  if tg_op = 'UPDATE' and new.item_id <> old.item_id then
+    raise exception 'publication item cannot change';
+  end if;
+
   select cv.status, ci.archived_at
     into v_status, v_archived
   from content_version cv
@@ -2064,8 +2103,10 @@ create trigger content_publication_assert
 ```
 
 A typed content row belongs to exactly one version and is immutable once that version
-is published. The shared trigger reads the version status, so every table does not
-repeat the rule.
+is published. It cannot move to another version: an update that changes `version_id`
+is refused before the status check, so a published version cannot lose its typed rows
+to a draft. The shared trigger reads the version status, so every table does not repeat
+the rule.
 
 ```sql
 create or replace function prevent_published_content_mutation()
@@ -2076,6 +2117,10 @@ declare
   v_version uuid;
   v_status version_status;
 begin
+  if tg_op = 'UPDATE' and old.version_id is distinct from new.version_id then
+    raise exception 'content rows cannot move between versions';
+  end if;
+
   v_version := case when tg_op = 'DELETE' then old.version_id else new.version_id end;
 
   select status into v_status
@@ -4439,9 +4484,10 @@ Supabase-specific; the test harness either runs Supabase local or skips this mig
 | Invariant                                                                                                                      | Enforced by                                                        |
 | ------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------ |
 | One open draft or in-review version per item                                                                                   | `content_version_one_open` unique index                          |
-| Published versions never change                                                                                                | `content_version_immutable` trigger                              |
-| A published version's typed rows and child rows never change                                                                   | `prevent_published_content_mutation` on every content table      |
-| The publication points at a published version of the same item                                                                 | `content_publication_assert` trigger                             |
+| Published versions are never updated or deleted                                                                                | `content_version_immutable` trigger                              |
+| A published version's typed rows and child rows never change or move to another version                                        | `prevent_published_content_mutation` on every content table      |
+| The publication points at a published version of the same item, and its item cannot change                                     | `content_publication_assert` trigger                             |
+| An archived item has no publication pointer                                                                                    | `content_item_archive_guard` trigger                             |
 | Every page section has its own status, versions and pointer                                                                    | `page_section` and `content_publication` rows                  |
 | A page publishes only when every section has a live version                                                                    | `publish_page` and `assert_publishable_version`                |
 | A project, figure, testimonial or client logo has an unexpired approval                                                        | `assert_publishable_version` trigger plus API scope checks       |
@@ -4618,7 +4664,7 @@ Alembic is the source of truth. The SQL above is split into these revisions:
 | `0001_extensions_enums` | Extensions and all enum types, including the `site_logo` role                                                                                                                                                                              | Drop enums only; extensions stay |
 | `0002_staff`            | `staff`, last-Admin statement and row triggers, timestamp trigger                                                                                                                                                           | Drop table and functions             |
 | `0003_media`            | `media`, media immutability trigger                                                                                                                                                                      | Drop table and trigger               |
-| `0004_content_core`     | `content_item`, `content_version`, `content_publication`, `content_seo`, the immutable-content function                                                                                                             | Drop tables and function             |
+| `0004_content_core`     | `content_item`, `content_version`, `content_publication`, `content_seo`, their six indexes, and the version, publication, archive and content-immutability functions and triggers                                                                                                             | Drop tables and functions            |
 | `0005_page_sections`    | `page_section`, `section_version`, `section_paragraph`, the four section child tables and their triggers, `section_version_item`                                                                        | Drop tables and triggers             |
 | `0006_services`         | `service_group`, `service_group_version`, `service_version`, `service`, their triggers and indexes                                                                                                 | Drop tables and triggers             |
 | `0007_projects`         | `project_version`, `project_image`, `project_technology`, `project`, their triggers and indexes                                                                                                                            | Drop tables and triggers             |

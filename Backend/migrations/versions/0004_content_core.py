@@ -6,8 +6,8 @@ The functions and triggers are copied from Backend/docs/DATABASE.md §Content it
 versions, §Page SEO, §Publication and immutability and §Timestamps and the last Admin.
 `prevent_published_content_mutation` is created here but attached only to `content_seo`;
 the typed content tables it also guards arrive in later revisions and attach it there.
-`content_version_set_updated_at` reuses the `set_updated_at` function from
-`0002_staff`.
+`content_item_archive_guard` refuses an archive that leaves a publication pointer.
+`content_version_set_updated_at` reuses the `set_updated_at` function from `0002_staff`.
 
 Revision ID: 0004_content_core
 Revises: 0003_media
@@ -66,6 +66,30 @@ create trigger content_version_bump_next
   for each row execute function bump_next_version();
 """
 
+PREVENT_ARCHIVED_WITH_PUBLICATION_SQL = """
+create or replace function prevent_archived_with_publication()
+returns trigger
+language plpgsql
+as $$
+begin
+  if old.archived_at is null
+     and new.archived_at is not null
+     and exists (
+       select 1 from content_publication where item_id = new.id
+     ) then
+    raise exception 'archive removes the publication pointer first';
+  end if;
+  return new;
+end;
+$$;
+"""
+
+CONTENT_ITEM_ARCHIVE_GUARD_TRIGGER_SQL = """
+create trigger content_item_archive_guard
+  before update on content_item
+  for each row execute function prevent_archived_with_publication();
+"""
+
 PREVENT_PUBLISHED_VERSION_MUTATION_SQL = """
 create or replace function prevent_published_version_mutation()
 returns trigger
@@ -75,6 +99,10 @@ begin
   if old.status = 'published' then
     raise exception 'published version % is immutable', old.id;
   end if;
+
+  if tg_op = 'DELETE' then
+    return old;
+  end if;
   return new;
 end;
 $$;
@@ -82,7 +110,7 @@ $$;
 
 CONTENT_VERSION_IMMUTABLE_TRIGGER_SQL = """
 create trigger content_version_immutable
-  before update on content_version
+  before update or delete on content_version
   for each row execute function prevent_published_version_mutation();
 """
 
@@ -95,6 +123,10 @@ declare
   v_status version_status;
   v_archived timestamptz;
 begin
+  if tg_op = 'UPDATE' and new.item_id <> old.item_id then
+    raise exception 'publication item cannot change';
+  end if;
+
   select cv.status, ci.archived_at
     into v_status, v_archived
   from content_version cv
@@ -131,6 +163,10 @@ declare
   v_version uuid;
   v_status version_status;
 begin
+  if tg_op = 'UPDATE' and old.version_id is distinct from new.version_id then
+    raise exception 'content rows cannot move between versions';
+  end if;
+
   v_version := case when tg_op = 'DELETE' then old.version_id else new.version_id end;
 
   select status into v_status
@@ -196,13 +232,13 @@ def upgrade() -> None:
         sa.Column(
             "archived_by",
             sa.Uuid(),
-            sa.ForeignKey("staff.user_id", ondelete="SET NULL"),
+            sa.ForeignKey("staff.user_id", ondelete="RESTRICT"),
         ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("id", "kind", name="content_item_id_kind_key"),
         sa.CheckConstraint("next_version > 0", name="content_item_next_version"),
         sa.CheckConstraint(
-            "path is null or path ~ '^/[a-z0-9-]*(/[a-z0-9-]+)*$'",
+            "path is null or path ~ '^/([a-z0-9-]+(/[a-z0-9-]+)*)?$'",
             name="content_item_path_format",
         ),
         sa.CheckConstraint(
@@ -226,7 +262,7 @@ def upgrade() -> None:
             name="content_item_section_shape",
         ),
         sa.CheckConstraint(
-            "archived_at is null or archived_by is not null",
+            "(archived_at is null) = (archived_by is null)",
             name="content_item_archive",
         ),
     )
@@ -405,6 +441,8 @@ def upgrade() -> None:
 
     op.execute(BUMP_NEXT_VERSION_SQL)
     op.execute(CONTENT_VERSION_BUMP_NEXT_TRIGGER_SQL)
+    op.execute(PREVENT_ARCHIVED_WITH_PUBLICATION_SQL)
+    op.execute(CONTENT_ITEM_ARCHIVE_GUARD_TRIGGER_SQL)
     op.execute(PREVENT_PUBLISHED_VERSION_MUTATION_SQL)
     op.execute(CONTENT_VERSION_IMMUTABLE_TRIGGER_SQL)
     op.execute(ASSERT_PUBLICATION_VERSION_SQL)
@@ -423,9 +461,11 @@ def downgrade() -> None:
     op.execute("drop trigger content_version_set_updated_at on content_version")
     op.execute("drop trigger content_version_immutable on content_version")
     op.execute("drop trigger content_version_bump_next on content_version")
+    op.execute("drop trigger content_item_archive_guard on content_item")
     op.execute("drop function prevent_published_content_mutation()")
     op.execute("drop function assert_publication_version()")
     op.execute("drop function prevent_published_version_mutation()")
+    op.execute("drop function prevent_archived_with_publication()")
     op.execute("drop function bump_next_version()")
     op.drop_table("content_seo")
     op.drop_table("content_publication")

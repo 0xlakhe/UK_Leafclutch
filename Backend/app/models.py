@@ -220,7 +220,7 @@ content_item = sa.Table(
     sa.Column(
         "archived_by",
         sa.Uuid(),
-        sa.ForeignKey("staff.user_id", ondelete="SET NULL"),
+        sa.ForeignKey("staff.user_id", ondelete="RESTRICT"),
     ),
     sa.PrimaryKeyConstraint("id"),
     # Composite target for the typed child tables. Redundant with the primary key, and
@@ -228,7 +228,7 @@ content_item = sa.Table(
     sa.UniqueConstraint("id", "kind", name="content_item_id_kind_key"),
     sa.CheckConstraint("next_version > 0", name="content_item_next_version"),
     sa.CheckConstraint(
-        "path is null or path ~ '^/[a-z0-9-]*(/[a-z0-9-]+)*$'",
+        "path is null or path ~ '^/([a-z0-9-]+(/[a-z0-9-]+)*)?$'",
         name="content_item_path_format",
     ),
     sa.CheckConstraint(
@@ -252,7 +252,7 @@ content_item = sa.Table(
         name="content_item_section_shape",
     ),
     sa.CheckConstraint(
-        "archived_at is null or archived_by is not null",
+        "(archived_at is null) = (archived_by is null)",
         name="content_item_archive",
     ),
     sa.Index(
