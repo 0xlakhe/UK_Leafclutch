@@ -289,3 +289,31 @@ Next: M2.
 
 Canonical: [0001-skeleton.md](0001-skeleton.md)
 
+---
+
+## Process: reviewed documents synced, plan updated
+
+Status: done
+Date: 2026-11-27
+
+Changed:
+- `Backend/docs/ADMIN.md`, `CONTRACT.md`, `DATABASE.md` replaced with the reviewed versions from the design workspace.
+- `Backend/docs/runbooks/database-validation.md` and `.sql` added: the harness that executed the schema on PostgreSQL 18.7.
+- `Backend/docs/work/PLAN.md`: validation reference, M11 (draft-on-unpublish, `delete_content`), M15 (Admin-only legal/settings, AAL1 sign-in), M16 (delete endpoint), M17 (evidence isolation), review focus 10–11, owner decisions.
+
+Evidence:
+- `cmp` and `sha256sum` identical for all five files against `/Users/prabeshshrestha/Work/website-build/docs`; commit `89ebb56`.
+- `delete_content`: 8 occurrences in `DATABASE.md`, 3 in `ADMIN.md`. Decisions 69 and 70 at `CONTRACT.md:1076-1077`.
+- Design workspace committed and clean at `baa66d0`; its tasks 0001, 0002 and 0003 are `done` with no open findings.
+
+Decisions:
+- **M8 accepted** by the owner on 27 November: no settings/landing two-way gate. The risk stays recorded in `ADMIN.md` §14 and is not mitigated.
+- **D-13 deferred to week 4**; it blocks the operational assignment, not M18.
+- The local database moves to the validated major, PostgreSQL 18. The production Supabase major is confirmed at deployment (M22); if it differs, the harness is re-run there.
+
+Remaining: the Compose image change and its verification.
+Next: M2 — extensions, enums and `staff`.
+
+Canonical: [PLAN.md](PLAN.md)
+
+
